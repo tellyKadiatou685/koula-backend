@@ -24,8 +24,8 @@ async function createDefaultAdmin() {
 
     const admin = await prisma.user.create({
       data: {
-        telephone: '775261930',
-        nomComplet: 'sayfoulaye Barry',
+        telephone: '770249773',
+        nomComplet: 'koula ',
         code: hashedCode,
         role: 'ADMIN',
         status: 'ACTIVE',

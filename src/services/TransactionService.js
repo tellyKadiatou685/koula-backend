@@ -4,18 +4,12 @@ import NotificationService from './NotificationService.js';
 import AccountTypeService from './AccountTypeService.js';
 
 class TransactionService {
-  // =====================================
-  // CONFIGURATION CENTRALISÉE DU RESET
-  // =====================================
   static RESET_CONFIG = {
     hour: 0,
     minute: 50,
     windowMinutes: 0
   };
 
-  // =====================================
-  // SYSTÈME DE NOTIFICATIONS ET AUTO-REFRESH
-  // =====================================
   async needsDashboardRefresh(lastCheckTime) {
     try {
       const resetConfig = this.getResetConfig();
@@ -106,33 +100,19 @@ class TransactionService {
       );
 
       const results = await Promise.allSettled(notificationPromises);
-
       const successful = results.filter(r => r.status === 'fulfilled').length;
       const failed = results.filter(r => r.status === 'rejected').length;
 
       console.log(`✅ [NOTIFICATIONS] ${successful} notifications envoyées, ${failed} échecs`);
 
-      return {
-        totalNotifications: notifications.length,
-        successful,
-        failed,
-        details: resetDetails
-      };
+      return { totalNotifications: notifications.length, successful, failed, details: resetDetails };
 
     } catch (error) {
       console.error('❌ [NOTIFICATIONS] Erreur envoi notifications:', error);
-      return {
-        error: error.message,
-        totalNotifications: 0,
-        successful: 0,
-        failed: 0
-      };
+      return { error: error.message, totalNotifications: 0, successful: 0, failed: 0 };
     }
   }
 
-  // =====================================
-  // UTILITAIRES ET HELPERS OPTIMISÉS
-  // =====================================
   getResetConfig() {
     return TransactionService.RESET_CONFIG;
   }
@@ -217,18 +197,11 @@ class TransactionService {
         const todayOnly = new Date();
         todayOnly.setHours(0, 0, 0, 0);
 
-        if (targetDateOnly < todayOnly) {
-          return true;
-        } else if (targetDateOnly.getTime() === todayOnly.getTime()) {
-          return false;
-        } else {
-          return false;
-        }
+        if (targetDateOnly < todayOnly) return true;
+        else return false;
       }
 
-      if (period === 'yesterday') {
-        return true;
-      }
+      if (period === 'yesterday') return true;
 
       return false;
 
@@ -307,7 +280,6 @@ class TransactionService {
       });
 
       console.log(`✅ [SNAPSHOT] Snapshot créé pour ${userId}`);
-
       return snapshot;
 
     } catch (error) {
@@ -316,9 +288,6 @@ class TransactionService {
     }
   }
 
-  // =====================================
-  // RECOMPUTE SNAPSHOT APRÈS MODIF HISTORIQUE
-  // =====================================
   async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
     try {
       const date = new Date(targetDateStr);
@@ -551,12 +520,10 @@ class TransactionService {
 
   formatAmount(amount, withSign = false) {
     const num = typeof amount === 'number' ? amount : parseFloat(amount);
-
     if (withSign) {
       if (num > 0) return `+${num.toLocaleString('fr-FR')} F`;
       else return `${num.toLocaleString('fr-FR')} F`;
     }
-
     return `${Math.abs(num).toLocaleString('fr-FR')} F`;
   }
 
@@ -696,61 +663,36 @@ class TransactionService {
   async createAdminTransaction(adminId, transactionData) {
     try {
       const {
-        superviseurId,
-        typeCompte,
-        typeOperation,
-        montant,
-        partenaireId,
-        partenaireNom,
-        telephoneLibre,
-        callerRole        // ← 'ADMIN' | 'SUPERVISEUR' — transmis par le contrôleur
+        superviseurId, typeCompte, typeOperation, montant,
+        partenaireId, partenaireNom, telephoneLibre, callerRole
       } = transactionData;
 
       const montantFloat = parseFloat(montant);
-      if (isNaN(montantFloat) || montantFloat <= 0) {
-        throw new Error('Montant invalide');
-      }
+      if (isNaN(montantFloat) || montantFloat <= 0) throw new Error('Montant invalide');
 
       const montantInt = this.convertToInt(montantFloat);
-
       const isPartnerTransaction = !!(partenaireId || partenaireNom);
 
       if (!isPartnerTransaction && typeCompte) {
         const typeCompteUpper = typeCompte.toUpperCase();
-
-        // ─── Vérifier que le type est actif (s'applique à tous) ──────────────
         const typeActif = await AccountTypeService.isTypeActive(typeCompteUpper);
         if (!typeActif) {
           const label = await AccountTypeService.getTypeLabel(typeCompteUpper);
-          throw new Error(
-            `Le type de compte "${label}" est actuellement désactivé. ` +
-            `Contactez l'administrateur.`
-          );
+          throw new Error(`Le type de compte "${label}" est actuellement désactivé. Contactez l'administrateur.`);
         }
 
-        // ─── Restrictions d'accès saisie : SUPERVISEURS uniquement ───────────
-        // Les admins ont toujours accès complet (début ET fin), peu importe la config.
         const isSupervisorCall = callerRole === 'SUPERVISEUR';
-
         if (isSupervisorCall && typeOperation === 'depot') {
-          // 'depot' = DEBUT_JOURNEE = saisie du début
           const canDebut = await AccountTypeService.canEnterDebut(typeCompteUpper);
           if (!canDebut) {
             const label = await AccountTypeService.getTypeLabel(typeCompteUpper);
-            throw new Error(
-              `La saisie du solde de début n'est pas autorisée pour le compte "${label}". ` +
-              `Seule la saisie de fin est permise pour ce type.`
-            );
+            throw new Error(`La saisie du solde de début n'est pas autorisée pour le compte "${label}". Seule la saisie de fin est permise pour ce type.`);
           }
         } else if (isSupervisorCall && typeOperation === 'retrait') {
-          // 'retrait' = FIN_JOURNEE = saisie de la fin
           const canFin = await AccountTypeService.canEnterFin(typeCompteUpper);
           if (!canFin) {
             const label = await AccountTypeService.getTypeLabel(typeCompteUpper);
-            throw new Error(
-              `La saisie du solde de fin n'est pas autorisée pour le compte "${label}". ` +
-              `Seule la saisie de début est permise pour ce type.`
-            );
+            throw new Error(`La saisie du solde de fin n'est pas autorisée pour le compte "${label}". Seule la saisie de début est permise pour ce type.`);
           }
         }
       }
@@ -781,178 +723,96 @@ class TransactionService {
         }
       }
 
-      // TRAITEMENT TRANSACTIONS PARTENAIRES
       if (isPartnerTransaction) {
         let transactionType, description;
-
         if (typeOperation === 'depot') {
-          transactionType = 'DEPOT';
-          description = `Dépôt partenaire ${partnerDisplayName}`;
+          transactionType = 'DEPOT'; description = `Dépôt partenaire ${partnerDisplayName}`;
         } else {
-          transactionType = 'RETRAIT';
-          description = `Retrait partenaire ${partnerDisplayName}`;
+          transactionType = 'RETRAIT'; description = `Retrait partenaire ${partnerDisplayName}`;
         }
 
         const result = await prisma.$transaction(async (tx) => {
-          const txData = {
-            montant: montantInt,
-            type: transactionType,
-            description,
-            envoyeurId: adminId,
-            destinataireId: superviseurId
-          };
-
-          if (partenaireId) {
-            txData.partenaireId = partenaireId;
-          } else if (partenaireNom) {
+          const txData = { montant: montantInt, type: transactionType, description, envoyeurId: adminId, destinataireId: superviseurId };
+          if (partenaireId) { txData.partenaireId = partenaireId; }
+          else if (partenaireNom) {
             txData.partenaireNom = partenaireNom.trim();
-            if (telephoneLibre && telephoneLibre.trim()) {
-              txData.telephoneLibre = telephoneLibre.trim();
-            }
+            if (telephoneLibre && telephoneLibre.trim()) txData.telephoneLibre = telephoneLibre.trim();
           }
-
           const transaction = await tx.transaction.create({
             data: txData,
-            select: {
-              id: true,
-              type: true,
-              description: true,
-              createdAt: true,
-              partenaireNom: true,
-              telephoneLibre: true
-            }
+            select: { id: true, type: true, description: true, createdAt: true, partenaireNom: true, telephoneLibre: true }
           });
-
           return { transaction, updatedAccount: null };
         });
 
         setImmediate(async () => {
           try {
-            const notificationTitle = typeOperation === 'depot'
-              ? 'Nouveau dépôt partenaire'
-              : 'Nouveau retrait partenaire';
+            const notificationTitle = typeOperation === 'depot' ? 'Nouveau dépôt partenaire' : 'Nouveau retrait partenaire';
             const notificationMessage = typeOperation === 'depot'
               ? `${partnerDisplayName} a déposé ${this.formatAmount(montantFloat)}`
               : `${partnerDisplayName} a retiré ${this.formatAmount(montantFloat)}`;
             const notificationType = typeOperation === 'depot' ? 'DEPOT_PARTENAIRE' : 'RETRAIT_PARTENAIRE';
-
-            await NotificationService.createNotification({
-              userId: superviseurId,
-              title: notificationTitle,
-              message: notificationMessage,
-              type: notificationType
-            });
-          } catch (notifError) {
-            console.error('Erreur notification (non-bloquante):', notifError);
-          }
+            await NotificationService.createNotification({ userId: superviseurId, title: notificationTitle, message: notificationMessage, type: notificationType });
+          } catch (notifError) { console.error('Erreur notification (non-bloquante):', notifError); }
         });
 
         return {
           transaction: {
-            id: result.transaction.id,
-            type: result.transaction.type,
-            montant: montantFloat,
-            description: result.transaction.description,
-            superviseurNom: supervisor.nomComplet,
-            typeCompte: null,
-            createdAt: result.transaction.createdAt,
-            isPartnerTransaction: true,
-            partnerName: partnerDisplayName,
-            partnerId: partenaireId || null,
-            partenaireNom: result.transaction.partenaireNom || null,
+            id: result.transaction.id, type: result.transaction.type, montant: montantFloat,
+            description: result.transaction.description, superviseurNom: supervisor.nomComplet,
+            typeCompte: null, createdAt: result.transaction.createdAt,
+            isPartnerTransaction: true, partnerName: partnerDisplayName,
+            partnerId: partenaireId || null, partenaireNom: result.transaction.partenaireNom || null,
             telephoneLibre: result.transaction.telephoneLibre || null,
-            isRegisteredPartner: !!partenaireId,
-            transactionCategory: 'PARTENAIRE'
+            isRegisteredPartner: !!partenaireId, transactionCategory: 'PARTENAIRE'
           },
           accountUpdated: false
         };
 
       } else {
-        // LOGIQUE DÉBUT/FIN JOURNÉE
         let account = await prisma.account.upsert({
-          where: {
-            userId_type: {
-              userId: superviseurId,
-              type: typeCompte.toUpperCase()
-            }
-          },
+          where: { userId_type: { userId: superviseurId, type: typeCompte.toUpperCase() } },
           update: {},
-          create: {
-            type: typeCompte.toUpperCase(),
-            userId: superviseurId,
-            balance: 0,
-            initialBalance: 0
-          },
+          create: { type: typeCompte.toUpperCase(), userId: superviseurId, balance: 0, initialBalance: 0 },
           select: { id: true, balance: true, initialBalance: true }
         });
 
         let transactionType, description, balanceUpdate;
-
         if (typeOperation === 'depot') {
-          transactionType = 'DEBUT_JOURNEE';
-          description = `Début journée ${typeCompte}`;
+          transactionType = 'DEBUT_JOURNEE'; description = `Début journée ${typeCompte}`;
           balanceUpdate = { initialBalance: { increment: montantInt } };
         } else {
-          transactionType = 'FIN_JOURNEE';
-          description = `Fin journée ${typeCompte}`;
+          transactionType = 'FIN_JOURNEE'; description = `Fin journée ${typeCompte}`;
           balanceUpdate = { balance: montantInt };
         }
 
         const result = await prisma.$transaction(async (tx) => {
           const updatedAccount = await tx.account.update({
-            where: { id: account.id },
-            data: balanceUpdate,
+            where: { id: account.id }, data: balanceUpdate,
             select: { balance: true, initialBalance: true }
           });
-
           const transaction = await tx.transaction.create({
-            data: {
-              montant: montantInt,
-              type: transactionType,
-              description,
-              envoyeurId: adminId,
-              destinataireId: superviseurId,
-              compteDestinationId: account.id
-            },
+            data: { montant: montantInt, type: transactionType, description, envoyeurId: adminId, destinataireId: superviseurId, compteDestinationId: account.id },
             select: { id: true, type: true, description: true, createdAt: true }
           });
-
           return { transaction, updatedAccount };
         });
 
         setImmediate(async () => {
           try {
-            const notificationTitle = typeOperation === 'depot'
-              ? 'Solde de début mis à jour'
-              : 'Solde de fin enregistré';
+            const notificationTitle = typeOperation === 'depot' ? 'Solde de début mis à jour' : 'Solde de fin enregistré';
             const notificationType = typeOperation === 'depot' ? 'DEBUT_JOURNEE' : 'FIN_JOURNEE';
-
-            await NotificationService.createNotification({
-              userId: superviseurId,
-              title: notificationTitle,
-              message: `${description} - ${this.formatAmount(montantFloat)} par l'admin`,
-              type: notificationType
-            });
-          } catch (notifError) {
-            console.error('Erreur notification (non-bloquante):', notifError);
-          }
+            await NotificationService.createNotification({ userId: superviseurId, title: notificationTitle, message: `${description} - ${this.formatAmount(montantFloat)} par l'admin`, type: notificationType });
+          } catch (notifError) { console.error('Erreur notification (non-bloquante):', notifError); }
         });
 
         return {
           transaction: {
-            id: result.transaction.id,
-            type: result.transaction.type,
-            montant: montantFloat,
-            description: result.transaction.description,
-            superviseurNom: supervisor.nomComplet,
-            typeCompte: typeCompte,
-            createdAt: result.transaction.createdAt,
-            isPartnerTransaction: false,
-            partnerName: null,
-            partnerId: null,
-            partenaireNom: null,
-            isRegisteredPartner: false,
-            transactionCategory: 'JOURNEE'
+            id: result.transaction.id, type: result.transaction.type, montant: montantFloat,
+            description: result.transaction.description, superviseurNom: supervisor.nomComplet,
+            typeCompte, createdAt: result.transaction.createdAt,
+            isPartnerTransaction: false, partnerName: null, partnerId: null,
+            partenaireNom: null, isRegisteredPartner: false, transactionCategory: 'JOURNEE'
           },
           accountUpdated: true,
           soldeActuel: this.convertFromInt(result.updatedAccount.balance),
@@ -976,29 +836,14 @@ class TransactionService {
       since.setHours(0, 0, 0, 0);
 
       const whereClause = {
-        type:          { in: ['DEPOT', 'RETRAIT'] },
-        partenaireId:  null,
-        partenaireNom: { not: null },
-        createdAt:     { gte: since },
-        OR: [{ archived: false }, { archived: null }]
+        type: { in: ['DEPOT', 'RETRAIT'] }, partenaireId: null, partenaireNom: { not: null },
+        createdAt: { gte: since }, OR: [{ archived: false }, { archived: null }]
       };
-
-      if (superviseurId) {
-        whereClause.destinataireId = superviseurId;
-      }
+      if (superviseurId) whereClause.destinataireId = superviseurId;
 
       const transactions = await prisma.transaction.findMany({
         where: whereClause,
-        select: {
-          id: true,
-          partenaireNom: true,
-          telephoneLibre: true,
-          montant: true,
-          type: true,
-          createdAt: true,
-          destinataireId: true,
-          destinataire: { select: { nomComplet: true } }
-        },
+        select: { id: true, partenaireNom: true, telephoneLibre: true, montant: true, type: true, createdAt: true, destinataireId: true, destinataire: { select: { nomComplet: true } } },
         orderBy: { createdAt: 'desc' }
       });
 
@@ -1007,15 +852,7 @@ class TransactionService {
         const nom = tx.partenaireNom.trim().toLowerCase();
         const tel = tx.telephoneLibre?.trim() || null;
         const key = tel ? `${nom}||${tel}` : nom;
-
-        if (!grouped[key]) {
-          grouped[key] = {
-            partenaireNom:  tx.partenaireNom.trim(),
-            telephoneLibre: tel,
-            transactions:   [],
-            superviseurs:   new Set()
-          };
-        }
+        if (!grouped[key]) { grouped[key] = { partenaireNom: tx.partenaireNom.trim(), telephoneLibre: tel, transactions: [], superviseurs: new Set() }; }
         grouped[key].transactions.push(tx);
         grouped[key].superviseurs.add(tx.destinataireId);
       });
@@ -1023,22 +860,9 @@ class TransactionService {
       const frequent = Object.values(grouped)
         .filter(g => g.transactions.length >= minTransactions)
         .map(g => {
-          const totalDepots   = g.transactions
-            .filter(t => t.type === 'DEPOT')
-            .reduce((s, t) => s + this.convertFromInt(t.montant), 0);
-          const totalRetraits = g.transactions
-            .filter(t => t.type === 'RETRAIT')
-            .reduce((s, t) => s + this.convertFromInt(t.montant), 0);
-          return {
-            partenaireNom:       g.partenaireNom,
-            telephoneLibre:      g.telephoneLibre,
-            nombreTransactions:  g.transactions.length,
-            totalDepots,
-            totalRetraits,
-            derniereTransaction: g.transactions[0].createdAt,
-            superviseurIds:      [...g.superviseurs],
-            peutConvertir:       !!g.telephoneLibre
-          };
+          const totalDepots   = g.transactions.filter(t => t.type === 'DEPOT').reduce((s, t) => s + this.convertFromInt(t.montant), 0);
+          const totalRetraits = g.transactions.filter(t => t.type === 'RETRAIT').reduce((s, t) => s + this.convertFromInt(t.montant), 0);
+          return { partenaireNom: g.partenaireNom, telephoneLibre: g.telephoneLibre, nombreTransactions: g.transactions.length, totalDepots, totalRetraits, derniereTransaction: g.transactions[0].createdAt, superviseurIds: [...g.superviseurs], peutConvertir: !!g.telephoneLibre };
         })
         .sort((a, b) => b.nombreTransactions - a.nombreTransactions);
 
@@ -1052,20 +876,14 @@ class TransactionService {
 
   async convertFreePartnerToAccount(partenaireNom, telephoneLibre, adminId) {
     try {
-      if (!partenaireNom || partenaireNom.trim().length < 2) {
-        throw new Error('Nom du partenaire invalide');
-      }
-      if (!telephoneLibre || telephoneLibre.trim().length < 6) {
-        throw new Error('Numéro de téléphone requis pour créer le compte');
-      }
+      if (!partenaireNom || partenaireNom.trim().length < 2) throw new Error('Nom du partenaire invalide');
+      if (!telephoneLibre || telephoneLibre.trim().length < 6) throw new Error('Numéro de téléphone requis pour créer le compte');
 
       const tel = telephoneLibre.trim();
       const nom = partenaireNom.trim();
 
       const existing = await prisma.user.findUnique({ where: { telephone: tel } });
-      if (existing) {
-        throw new Error(`Le numéro ${tel} est déjà utilisé par un compte existant`);
-      }
+      if (existing) throw new Error(`Le numéro ${tel} est déjà utilisé par un compte existant`);
 
       const accessCode = Math.floor(100000 + Math.random() * 900000).toString();
       const bcrypt = await import('bcryptjs');
@@ -1073,44 +891,22 @@ class TransactionService {
       const hashedCode = await bcrypt.hash(accessCode, saltRounds);
 
       const newUser = await prisma.user.create({
-        data: {
-          telephone:  tel,
-          nomComplet: nom,
-          code:       hashedCode,
-          codeClair:  accessCode,
-          role:       'PARTENAIRE',
-          status:     'ACTIVE'
-        }
+        data: { telephone: tel, nomComplet: nom, code: hashedCode, codeClair: accessCode, role: 'PARTENAIRE', status: 'ACTIVE' }
       });
 
       await prisma.notification.create({
-        data: {
-          userId:  adminId,
-          title:   'Partenaire créé',
-          message: `${nom} a été enregistré comme partenaire. Code d'accès : ${accessCode}`,
-          type:    'CREATION_UTILISATEUR'
-        }
+        data: { userId: adminId, title: 'Partenaire créé', message: `${nom} a été enregistré comme partenaire. Code d'accès : ${accessCode}`, type: 'CREATION_UTILISATEUR' }
       });
 
       await prisma.transaction.updateMany({
-        where: {
-          partenaireNom: { equals: nom, mode: 'insensitive' },
-          partenaireId:  null
-        },
+        where: { partenaireNom: { equals: nom, mode: 'insensitive' }, partenaireId: null },
         data: { partenaireId: newUser.id }
       });
 
       console.log(`✅ [CONVERT PARTNER] ${nom} (${tel}) converti en partenaire`);
 
       return {
-        user: {
-          id:         newUser.id,
-          nomComplet: newUser.nomComplet,
-          telephone:  newUser.telephone,
-          role:       newUser.role,
-          status:     newUser.status,
-          createdAt:  newUser.createdAt
-        },
+        user: { id: newUser.id, nomComplet: newUser.nomComplet, telephone: newUser.telephone, role: newUser.role, status: newUser.status, createdAt: newUser.createdAt },
         codeAcces: accessCode
       };
 
@@ -1121,31 +917,22 @@ class TransactionService {
   }
 
   // =====================================
-  // SYSTÈME DE RESET AUTOMATIQUE VERCEL CRON
+  // SYSTÈME DE RESET
   // =====================================
   async cleanupDashboardAfterReset() {
     try {
       console.log('🧹 [CLEANUP] Nettoyage post-reset...');
-
       const now = new Date();
       const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
       const resetConfig = this.getResetConfig();
       const todayResetTime = new Date(now);
       todayResetTime.setHours(resetConfig.hour, resetConfig.minute, 0, 0);
-
       const cleanupResult = await prisma.transaction.updateMany({
-        where: {
-          createdAt: { gte: startOfToday, lt: todayResetTime },
-          partenaireId: { not: null },
-          archived: { not: true }
-        },
+        where: { createdAt: { gte: startOfToday, lt: todayResetTime }, partenaireId: { not: null }, archived: { not: true } },
         data: { archived: true, archivedAt: now }
       });
-
       console.log(`✅ [CLEANUP] ${cleanupResult.count} transactions partenaires nettoyées`);
-
       return cleanupResult.count;
-
     } catch (error) {
       console.error('❌ [CLEANUP] Erreur:', error);
       throw error;
@@ -1155,15 +942,8 @@ class TransactionService {
   async checkAndResetDaily() {
     try {
       const resetCheck = this.isInResetWindow();
-
       if (!resetCheck.isInWindow) {
-        return {
-          success: false,
-          reason: 'outside_reset_window',
-          currentTime: resetCheck.currentTime,
-          resetWindow: `${resetCheck.resetTime} (${resetCheck.windowType})`,
-          cronMessage: 'Reset géré par Vercel CRON à 00h00 UTC'
-        };
+        return { success: false, reason: 'outside_reset_window', currentTime: resetCheck.currentTime, resetWindow: `${resetCheck.resetTime} (${resetCheck.windowType})`, cronMessage: 'Reset géré par Vercel CRON à 00h00 UTC' };
       }
 
       const now = new Date();
@@ -1171,47 +951,25 @@ class TransactionService {
       const lastResetDate = await this.getLastResetDate();
       const resetConfig = this.getResetConfig();
       const resetHourMinute = `${resetConfig.hour}:${resetConfig.minute}`;
-      const shouldReset = !lastResetDate ||
-                         !lastResetDate.includes(dateKey) ||
-                         lastResetDate.includes('ERROR') ||
-                         !lastResetDate.includes(resetHourMinute);
+      const shouldReset = !lastResetDate || !lastResetDate.includes(dateKey) || lastResetDate.includes('ERROR') || !lastResetDate.includes(resetHourMinute);
 
       if (shouldReset) {
         try {
           const archivedCount = await this.archivePartnerTransactionsDynamic();
           await this.transferBalancesToInitial();
           const cleanedCount = await this.cleanupDashboardAfterReset();
-
           const resetKey = `${dateKey}-SUCCESS-${resetCheck.currentTime}-${resetHourMinute}-manual`;
           await this.saveResetDate(resetKey);
-
-          const notificationResult = await this.notifyDashboardRefresh({
-            archivedCount, cleanedCount, executedAt: now.toISOString()
-          });
-
-          return {
-            success: true, archivedCount, cleanedCount,
-            executedAt: now.toISOString(),
-            resetConfig: this.getResetConfig(),
-            notifications: notificationResult,
-            needsRefresh: true, type: 'manual'
-          };
-
+          const notificationResult = await this.notifyDashboardRefresh({ archivedCount, cleanedCount, executedAt: now.toISOString() });
+          return { success: true, archivedCount, cleanedCount, executedAt: now.toISOString(), resetConfig: this.getResetConfig(), notifications: notificationResult, needsRefresh: true, type: 'manual' };
         } catch (resetError) {
           const errorKey = `${dateKey}-ERROR-${resetCheck.currentTime}`;
           await this.saveResetDate(errorKey);
           throw resetError;
         }
       } else {
-        return {
-          success: false,
-          reason: 'already_executed_today',
-          lastExecution: lastResetDate,
-          currentTime: resetCheck.currentTime,
-          cronMessage: 'Reset géré par Vercel CRON'
-        };
+        return { success: false, reason: 'already_executed_today', lastExecution: lastResetDate, currentTime: resetCheck.currentTime, cronMessage: 'Reset géré par Vercel CRON' };
       }
-
     } catch (error) {
       console.error('❌ [MANUAL RESET] Erreur checkAndResetDaily:', error);
       return { success: false, error: error.message, currentTime: new Date().toISOString() };
@@ -1226,171 +984,74 @@ class TransactionService {
 
   async archivePartnerTransactionsDynamic() {
     const { startOfYesterday, endOfYesterday } = this.getYesterdayRange();
-
     const result = await prisma.transaction.updateMany({
       where: {
         createdAt: { gte: startOfYesterday, lte: endOfYesterday },
         type: { in: ['DEPOT', 'RETRAIT'] },
-        OR: [
-          { partenaireId: { not: null } },
-          { partenaireNom: { not: null } }
-        ],
-        AND: [
-          { OR: [{ archived: false }, { archived: null }] }
-        ]
+        OR: [{ partenaireId: { not: null } }, { partenaireNom: { not: null } }],
+        AND: [{ OR: [{ archived: false }, { archived: null }] }]
       },
       data: { archived: true, archivedAt: new Date() }
     });
-
-    console.log(`✅ [DYNAMIC ARCHIVE] ${result.count} transactions archivées`, {
-      start: startOfYesterday.toISOString(),
-      end: endOfYesterday.toISOString()
-    });
-
+    console.log(`✅ [DYNAMIC ARCHIVE] ${result.count} transactions archivées`, { start: startOfYesterday.toISOString(), end: endOfYesterday.toISOString() });
     return result.count;
   }
 
- // =====================================
-  // TRANSFERT DES SOLDES AU RESET
-  //
-  // Règles par défaut (si non exclu) :
-  //   - LIQUIDE  → fin devient début, fin = 0
-  //   - Tous les autres → début = 0, fin = 0
-  //
-  // Si un type est dans resetExcluded :
-  //   → ses données (début ET fin) restent intactes, aucune modif
-  // =====================================
   async transferBalancesToInitial() {
     try {
       console.log('🔄 [TRANSFER] Début du transfert des soldes...');
-
-      // Récupérer les types exclus du reset
       const excludedTypes = await AccountTypeService.getResetExcludedTypes();
       console.log(`🔒 [TRANSFER] Types exclus du reset: ${excludedTypes.length > 0 ? excludedTypes.join(', ') : 'aucun'}`);
 
-      // ── LIQUIDE (si non exclu) : fin → début, fin = 0 ────────────────────
       if (!excludedTypes.includes('LIQUIDE')) {
-        await prisma.$executeRaw`
-          UPDATE accounts
-          SET "previousInitialBalance" = "initialBalance",
-              "initialBalance" = balance,
-              balance = 0
-          WHERE type = 'LIQUIDE'
-            AND "userId" IN (
-              SELECT id FROM users
-              WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE'
-            )
-        `;
+        await prisma.$executeRaw`UPDATE accounts SET "previousInitialBalance" = "initialBalance", "initialBalance" = balance, balance = 0 WHERE type = 'LIQUIDE' AND "userId" IN (SELECT id FROM users WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE')`;
         console.log('✅ [TRANSFER] LIQUIDE : fin → début, fin = 0');
       } else {
-        // Même si exclu, on met à jour previousInitialBalance pour les snapshots
-        await prisma.$executeRaw`
-          UPDATE accounts
-          SET "previousInitialBalance" = "initialBalance"
-          WHERE type = 'LIQUIDE'
-            AND "userId" IN (
-              SELECT id FROM users
-              WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE'
-            )
-        `;
+        await prisma.$executeRaw`UPDATE accounts SET "previousInitialBalance" = "initialBalance" WHERE type = 'LIQUIDE' AND "userId" IN (SELECT id FROM users WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE')`;
         console.log('🔒 [TRANSFER] LIQUIDE : exclu du reset, données conservées');
       }
 
-      // ── Autres types ──────────────────────────────────────────────────────
-      // On traite chaque type séparément pour respecter les exclusions
-      const otherTypes = [
-        'ORANGE_MONEY', 'WAVE', 'UV_MASTER',
-        'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM'
-      ];
-
+      const otherTypes = ['ORANGE_MONEY', 'WAVE', 'UV_MASTER', 'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM'];
       for (const type of otherTypes) {
         if (excludedTypes.includes(type)) {
-          // Exclu : conserver les données, juste mettre à jour previousInitialBalance
-          await prisma.$executeRaw`
-            UPDATE accounts
-            SET "previousInitialBalance" = "initialBalance"
-            WHERE type = ${type}
-              AND "userId" IN (
-                SELECT id FROM users
-                WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE'
-              )
-          `;
+          await prisma.$executeRaw`UPDATE accounts SET "previousInitialBalance" = "initialBalance" WHERE type = ${type} AND "userId" IN (SELECT id FROM users WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE')`;
           console.log(`🔒 [TRANSFER] ${type} : exclu du reset, données conservées`);
         } else {
-          // Non exclu : début = 0, fin = 0
-          await prisma.$executeRaw`
-            UPDATE accounts
-            SET "previousInitialBalance" = "initialBalance",
-                "initialBalance" = 0,
-                balance = 0
-            WHERE type = ${type}
-              AND "userId" IN (
-                SELECT id FROM users
-                WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE'
-              )
-          `;
+          await prisma.$executeRaw`UPDATE accounts SET "previousInitialBalance" = "initialBalance", "initialBalance" = 0, balance = 0 WHERE type = ${type} AND "userId" IN (SELECT id FROM users WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE')`;
         }
       }
 
-      // ── Slots custom (AUTRES_*) ───────────────────────────────────────────
-      // On récupère tous les types custom actifs et on les traite individuellement
-      const customSlotIds = await prisma.systemConfig.findFirst({
-        where: { key: 'custom_account_slots' }
-      });
-
+      const customSlotIds = await prisma.systemConfig.findFirst({ where: { key: 'custom_account_slots' } });
       if (customSlotIds?.value) {
         const slots = JSON.parse(customSlotIds.value);
         for (const slot of slots) {
           if (excludedTypes.includes(slot.id)) {
-            await prisma.$executeRaw`
-              UPDATE accounts
-              SET "previousInitialBalance" = "initialBalance"
-              WHERE type = ${slot.id}
-                AND "userId" IN (
-                  SELECT id FROM users
-                  WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE'
-                )
-            `;
+            await prisma.$executeRaw`UPDATE accounts SET "previousInitialBalance" = "initialBalance" WHERE type = ${slot.id} AND "userId" IN (SELECT id FROM users WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE')`;
             console.log(`🔒 [TRANSFER] ${slot.id} (${slot.label}) : exclu du reset, données conservées`);
           } else {
-            await prisma.$executeRaw`
-              UPDATE accounts
-              SET "previousInitialBalance" = "initialBalance",
-                  "initialBalance" = 0,
-                  balance = 0
-              WHERE type = ${slot.id}
-                AND "userId" IN (
-                  SELECT id FROM users
-                  WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE'
-                )
-            `;
+            await prisma.$executeRaw`UPDATE accounts SET "previousInitialBalance" = "initialBalance", "initialBalance" = 0, balance = 0 WHERE type = ${slot.id} AND "userId" IN (SELECT id FROM users WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE')`;
           }
         }
       }
 
       console.log(`✅ [TRANSFER] Transfert terminé`);
-
     } catch (error) {
       console.error('❌ [TRANSFER] Erreur transferBalancesToInitial:', error);
       throw error;
     }
   }
+
   async getLastResetDate() {
     try {
-      const config = await prisma.systemConfig.findFirst({
-        where: { key: 'last_reset_date' },
-        select: { value: true }
-      });
+      const config = await prisma.systemConfig.findFirst({ where: { key: 'last_reset_date' }, select: { value: true } });
       if (config) return config.value;
     } catch (error) {
       console.log('[RESET] Table systemConfig non disponible, utilisation alternative');
     }
-
     try {
       const lastReset = await prisma.transaction.findFirst({
         where: { type: 'AUDIT_MODIFICATION', description: { contains: '[SYSTEM RESET]' } },
-        orderBy: { createdAt: 'desc' },
-        select: { description: true }
+        orderBy: { createdAt: 'desc' }, select: { description: true }
       });
       return lastReset?.description || null;
     } catch (error) {
@@ -1401,24 +1062,11 @@ class TransactionService {
 
   async saveResetDate(dateString) {
     try {
-      await prisma.systemConfig.upsert({
-        where: { key: 'last_reset_date' },
-        update: { value: dateString },
-        create: { key: 'last_reset_date', value: dateString }
-      });
+      await prisma.systemConfig.upsert({ where: { key: 'last_reset_date' }, update: { value: dateString }, create: { key: 'last_reset_date', value: dateString } });
     } catch (error) {
       try {
-        const adminUser = await prisma.user.findFirst({
-          where: { role: 'ADMIN' }, select: { id: true }
-        });
-        await prisma.transaction.create({
-          data: {
-            montant: 0,
-            type: 'AUDIT_MODIFICATION',
-            description: `[SYSTEM RESET] ${dateString}`,
-            envoyeurId: adminUser?.id || 'cmffpzf8e0000248t0hu4w1gr'
-          }
-        });
+        const adminUser = await prisma.user.findFirst({ where: { role: 'ADMIN' }, select: { id: true } });
+        await prisma.transaction.create({ data: { montant: 0, type: 'AUDIT_MODIFICATION', description: `[SYSTEM RESET] ${dateString}`, envoyeurId: adminUser?.id || 'cmffpzf8e0000248t0hu4w1gr' } });
       } catch (altError) {
         console.error('[RESET] Erreur saveResetDate (alternative):', altError);
       }
@@ -1428,7 +1076,6 @@ class TransactionService {
   async forceReset(adminId = 'vercel-cron') {
     try {
       console.log(`🤖 [CRON RESET ${adminId.toUpperCase()}] Lancement du reset automatique...`);
-
       const now = new Date();
       const yesterday = new Date(now);
       yesterday.setDate(yesterday.getDate() - 1);
@@ -1436,49 +1083,23 @@ class TransactionService {
 
       console.log('📸 [CRON RESET] Étape 0/5 - Création des snapshots quotidiens...');
       const snapshotResult = await this.createSnapshotsForAllSupervisors(yesterday);
-
       console.log('📦 [CRON RESET] Étape 1/5 - Archivage des transactions partenaires...');
       const archivedCount = await this.archivePartnerTransactionsDynamic();
-
       console.log('💰 [CRON RESET] Étape 2/5 - Transfert des soldes...');
       await this.transferBalancesToInitial();
-
       console.log('🧹 [CRON RESET] Étape 3/5 - Nettoyage des données...');
       const cleanedCount = await this.cleanupDashboardAfterReset();
-
       console.log('💾 [CRON RESET] Étape 4/5 - Enregistrement du reset...');
       const resetKey = `${now.toDateString()}-SUCCESS-${now.getHours()}h${now.getMinutes()}-${adminId}`;
       await this.saveResetDate(resetKey);
 
-      const adminUser = await prisma.user.findFirst({
-        where: { role: 'ADMIN' }, select: { id: true }
-      });
-
-      await prisma.transaction.create({
-        data: {
-          montant: 0,
-          type: 'AUDIT_MODIFICATION',
-          description: `Reset automatique ${adminId} - ${snapshotResult.successful} snapshots, ${archivedCount} archivées, ${cleanedCount} nettoyées`,
-          envoyeurId: adminUser?.id || 'cmffpzf8e0000248t0hu4w1gr'
-        }
-      });
+      const adminUser = await prisma.user.findFirst({ where: { role: 'ADMIN' }, select: { id: true } });
+      await prisma.transaction.create({ data: { montant: 0, type: 'AUDIT_MODIFICATION', description: `Reset automatique ${adminId} - ${snapshotResult.successful} snapshots, ${archivedCount} archivées, ${cleanedCount} nettoyées`, envoyeurId: adminUser?.id || 'cmffpzf8e0000248t0hu4w1gr' } });
 
       console.log('📢 [CRON RESET] Étape 5/5 - Envoi des notifications...');
-      const notificationResult = await this.notifyDashboardRefresh({
-        archivedCount, cleanedCount,
-        snapshotsCreated: snapshotResult.successful,
-        executedAt: now.toISOString()
-      });
+      const notificationResult = await this.notifyDashboardRefresh({ archivedCount, cleanedCount, snapshotsCreated: snapshotResult.successful, executedAt: now.toISOString() });
 
-      return {
-        success: true,
-        snapshotsCreated: snapshotResult.successful,
-        archivedCount, cleanedCount,
-        executedAt: now.toISOString(),
-        type: adminId,
-        notifications: notificationResult,
-        message: `Reset automatique ${adminId} exécuté avec succès à ${now.toISOString()}`
-      };
+      return { success: true, snapshotsCreated: snapshotResult.successful, archivedCount, cleanedCount, executedAt: now.toISOString(), type: adminId, notifications: notificationResult, message: `Reset automatique ${adminId} exécuté avec succès à ${now.toISOString()}` };
 
     } catch (error) {
       console.error(`❌ [CRON RESET ${adminId.toUpperCase()}] Erreur:`, error);
@@ -1494,31 +1115,19 @@ class TransactionService {
 
   validateAdminTransactionData(data) {
     const errors = [];
-
     if (!data.superviseurId) errors.push('Superviseur requis');
-
     const hasPartenaireId  = !!data.partenaireId;
     const hasPartenaireNom = !!data.partenaireNom;
     const isPartnerTransaction = hasPartenaireId || hasPartenaireNom;
-
-    if (hasPartenaireId && hasPartenaireNom) {
-      errors.push('Choisissez soit un partenaire enregistré, soit un nom libre (pas les deux)');
-    }
-
-    if (!isPartnerTransaction && !data.typeCompte) {
-      errors.push('Type de compte requis pour transactions début/fin journée');
-    }
-
+    if (hasPartenaireId && hasPartenaireNom) errors.push('Choisissez soit un partenaire enregistré, soit un nom libre (pas les deux)');
+    if (!isPartnerTransaction && !data.typeCompte) errors.push('Type de compte requis pour transactions début/fin journée');
     if (!data.typeOperation) errors.push('Type d\'opération requis');
-
     if (!data.montant || data.montant <= 0) errors.push('Montant doit être supérieur à 0');
-
     if (hasPartenaireNom) {
       const nomTrimmed = data.partenaireNom.trim();
       if (nomTrimmed.length < 2) errors.push('Nom du partenaire doit contenir au moins 2 caractères');
       if (nomTrimmed.length > 100) errors.push('Nom du partenaire trop long (maximum 100 caractères)');
     }
-
     return errors;
   }
 
@@ -1531,6 +1140,10 @@ class TransactionService {
 
       const dateFilter = this.getDateFilter(period, customDate);
       const includeArchived = await this.shouldIncludeArchivedTransactions(period, customDate);
+
+      // ── Type vedette dynamique ────────────────────────────────────────────
+      const { type: featuredType, label: featuredLabel } = await AccountTypeService.getFeaturedType();
+      console.log(`⭐ [FEATURED] Type vedette: ${featuredType} ("${featuredLabel}")`);
 
       let snapshotDate = null;
       if (includeArchived) {
@@ -1559,10 +1172,7 @@ class TransactionService {
         select: {
           id: true, nomComplet: true, status: true,
           accounts: {
-            select: {
-              type: true, balance: true,
-              initialBalance: true, previousInitialBalance: true
-            }
+            select: { type: true, balance: true, initialBalance: true, previousInitialBalance: true }
           },
           transactionsRecues: {
             where: { ...transactionFilter, ...excludeDeleted },
@@ -1577,7 +1187,8 @@ class TransactionService {
         orderBy: { nomComplet: 'asc' }
       });
 
-      let totalDebutGlobal = 0, totalSortieGlobal = 0, uvMasterSolde = 0, uvMasterSorties = 0;
+      let totalDebutGlobal = 0, totalSortieGlobal = 0;
+      let featuredSolde = 0, featuredSorties = 0;
 
       const supervisorCards = await Promise.all(supervisors.map(async (supervisor) => {
         const accountsByType = { debut: {}, sortie: {} };
@@ -1587,19 +1198,23 @@ class TransactionService {
           if (snapshot) {
             Object.assign(accountsByType.debut, snapshot.comptes.debut);
             Object.assign(accountsByType.sortie, snapshot.comptes.sortie);
-            if (snapshot.comptes.sortie.UV_MASTER) {
-              uvMasterSorties += snapshot.comptes.sortie.UV_MASTER;
-              uvMasterSolde   += snapshot.comptes.debut.UV_MASTER;
-            }
+
+            // Accumuler le type vedette depuis le snapshot
+            // Le snapshot stocke les clés standard; pour un type custom on lit depuis comptes
+            const snapshotDebut  = snapshot.comptes.debut[featuredType]  ?? 0;
+            const snapshotSortie = snapshot.comptes.sortie[featuredType] ?? 0;
+            featuredSolde   += snapshotDebut;
+            featuredSorties += snapshotSortie;
+
           } else {
             supervisor.accounts.forEach(account => {
-              const ancienDebutHier    = this.convertFromInt(account.previousInitialBalance || 0);
-              const ancienneSortieHier = this.convertFromInt(account.initialBalance || 0);
-              accountsByType.debut[account.type]  = ancienDebutHier;
-              accountsByType.sortie[account.type] = ancienneSortieHier;
-              if (account.type === 'UV_MASTER') {
-                uvMasterSorties += ancienneSortieHier;
-                uvMasterSolde   += ancienDebutHier;
+              const ancienDebut  = this.convertFromInt(account.previousInitialBalance || 0);
+              const ancienSortie = this.convertFromInt(account.initialBalance || 0);
+              accountsByType.debut[account.type]  = ancienDebut;
+              accountsByType.sortie[account.type] = ancienSortie;
+              if (account.type === featuredType) {
+                featuredSolde   += ancienDebut;
+                featuredSorties += ancienSortie;
               }
             });
           }
@@ -1609,9 +1224,9 @@ class TransactionService {
             const current = this.convertFromInt(account.balance || 0);
             accountsByType.debut[account.type]  = initial;
             accountsByType.sortie[account.type] = current;
-            if (account.type === 'UV_MASTER') {
-              uvMasterSorties += current;
-              uvMasterSolde   += initial;
+            if (account.type === featuredType) {
+              featuredSolde   += initial;
+              featuredSorties += current;
             }
           });
         }
@@ -1621,31 +1236,20 @@ class TransactionService {
 
         if (snapshotDate) {
           const resetConfig = this.getResetConfig();
-
           const dayStart = new Date(snapshotDate);
           dayStart.setHours(resetConfig.hour, resetConfig.minute, 0, 0);
-
           const dayEnd = new Date(dayStart);
           dayEnd.setDate(dayEnd.getDate() + 1);
           dayEnd.setTime(dayEnd.getTime() - 1000);
 
           partnerTxSource = await prisma.transaction.findMany({
             where: {
-              destinataireId: supervisor.id,
-              type: { in: ['DEPOT', 'RETRAIT'] },
-              archived: true,
-              createdAt: { gte: dayStart, lte: dayEnd },
-              OR: [
-                { partenaireId: { not: null } },
-                { partenaireNom: { not: null } }
-              ],
+              destinataireId: supervisor.id, type: { in: ['DEPOT', 'RETRAIT'] },
+              archived: true, createdAt: { gte: dayStart, lte: dayEnd },
+              OR: [{ partenaireId: { not: null } }, { partenaireNom: { not: null } }],
               NOT: { description: { startsWith: '[SUPPRIMÉ]' } }
             },
-            select: {
-              id: true, type: true, montant: true,
-              partenaireId: true, partenaireNom: true,
-              partenaire: { select: { nomComplet: true } }
-            }
+            select: { id: true, type: true, montant: true, partenaireId: true, partenaireNom: true, partenaire: { select: { nomComplet: true } } }
           });
         }
 
@@ -1688,9 +1292,25 @@ class TransactionService {
       }));
 
       const globalTotals = {
+        // ── Compte vedette dynamique ──────────────────────────────────────────
+        featured: {
+          type:    featuredType,
+          label:   featuredLabel,
+          solde:   featuredSolde,
+          sorties: featuredSorties,
+          formatted: {
+            solde:   this.formatAmount(featuredSolde),
+            sorties: this.formatAmount(featuredSorties)
+          }
+        },
+        // ── Alias de compatibilité (peut être supprimé plus tard) ─────────────
         uvMaster: {
-          solde: uvMasterSolde, sorties: uvMasterSorties,
-          formatted: { solde: this.formatAmount(uvMasterSolde), sorties: this.formatAmount(uvMasterSorties) }
+          solde:   featuredSolde,
+          sorties: featuredSorties,
+          formatted: {
+            solde:   this.formatAmount(featuredSolde),
+            sorties: this.formatAmount(featuredSorties)
+          }
         },
         debutTotalGlobal:  totalDebutGlobal,
         sortieTotalGlobal: totalSortieGlobal,
@@ -1705,11 +1325,14 @@ class TransactionService {
       return {
         period, customDate, globalTotals, supervisorCards,
         dynamicConfig: {
-          resetConfig: this.getResetConfig(), includeArchived,
+          resetConfig:    this.getResetConfig(),
+          includeArchived,
           targetDateTime: customDate,
           filterApplied:  includeArchived ? 'archived_included' : 'archived_excluded',
           dataSource:     snapshotDate ? 'historical_snapshot' : 'current_live',
           snapshotDate:   snapshotDate?.toISOString().split('T')[0],
+          featuredType,
+          featuredLabel,
           cronStatus:     'Vercel CRON géré automatiquement'
         }
       };
@@ -1725,6 +1348,9 @@ class TransactionService {
       const dateFilter = this.getDateFilter(period, customDate);
       const includeArchived = await this.shouldIncludeArchivedTransactions(period, customDate);
 
+      // ── Type vedette dynamique ────────────────────────────────────────────
+      const { type: featuredType, label: featuredLabel } = await AccountTypeService.getFeaturedType();
+
       const resetConfig = this.getResetConfig();
       const now = new Date();
       const todayResetTime = new Date(now);
@@ -1739,21 +1365,15 @@ class TransactionService {
 
         const targetDayStart = new Date(targetDate);
         targetDayStart.setHours(resetConfig.hour, resetConfig.minute, 0, 0);
-
         const targetDayEnd = new Date(targetDayStart);
         targetDayEnd.setDate(targetDayEnd.getDate() + 1);
         targetDayEnd.setTime(targetDayEnd.getTime() - 1000);
 
         transactionFilter = {
           createdAt: { gte: targetDayStart, lte: targetDayEnd },
-          AND: [
-            { OR: [{ envoyeurId: superviseurId }, { destinataireId: superviseurId }] }
-          ],
+          AND: [{ OR: [{ envoyeurId: superviseurId }, { destinataireId: superviseurId }] }],
           archived: true,
-          OR: [
-            { partenaireId: { not: null } },
-            { partenaireNom: { not: null } }
-          ]
+          OR: [{ partenaireId: { not: null } }, { partenaireNom: { not: null } }]
         };
       } else {
         transactionFilter = {
@@ -1765,24 +1385,16 @@ class TransactionService {
         };
       }
 
-      const [supervisor, allTransactions, uvMasterAccounts] = await Promise.all([
+      const [supervisor, allTransactions, featuredAccounts] = await Promise.all([
         prisma.user.findUnique({
           where: { id: superviseurId },
           select: {
             id: true, nomComplet: true, status: true,
-            accounts: {
-              select: {
-                type: true, balance: true,
-                initialBalance: true, previousInitialBalance: true
-              }
-            }
+            accounts: { select: { type: true, balance: true, initialBalance: true, previousInitialBalance: true } }
           }
         }),
         prisma.transaction.findMany({
-          where: {
-            ...transactionFilter,
-            NOT: { description: { startsWith: '[SUPPRIMÉ]' } }
-          },
+          where: { ...transactionFilter, NOT: { description: { startsWith: '[SUPPRIMÉ]' } } },
           select: {
             id: true, type: true, montant: true, description: true, createdAt: true,
             envoyeurId: true, destinataireId: true, partenaireId: true,
@@ -1794,8 +1406,9 @@ class TransactionService {
           orderBy: { createdAt: 'desc' },
           take: 50
         }),
+        // Récupérer le type vedette sur TOUS les superviseurs actifs
         prisma.account.findMany({
-          where: { type: 'UV_MASTER', user: { role: 'SUPERVISEUR', status: 'ACTIVE' } },
+          where: { type: featuredType, user: { role: 'SUPERVISEUR', status: 'ACTIVE' } },
           select: { balance: true, initialBalance: true, previousInitialBalance: true }
         })
       ]);
@@ -1806,12 +1419,10 @@ class TransactionService {
         return {
           superviseur: { id: supervisor.id, nom: supervisor.nomComplet, status: supervisor.status },
           period, customDate,
-          uvMaster: { personal: { debut: 0, sortie: 0, formatted: "0 F" }, total: 0, formatted: "0 F" },
+          featured: { type: featuredType, label: featuredLabel, personal: { debut: 0, sortie: 0, formatted: '0 F' }, total: 0, formatted: '0 F' },
+          uvMaster: { personal: { debut: 0, sortie: 0, formatted: '0 F' }, total: 0, formatted: '0 F' },
           comptes: { debut: {}, sortie: {} },
-          totaux: {
-            debutTotal: 0, sortieTotal: 0, grTotal: 0,
-            formatted: { debutTotal: "0 F", sortieTotal: "0 F", grTotal: "0 F" }
-          },
+          totaux: { debutTotal: 0, sortieTotal: 0, grTotal: 0, formatted: { debutTotal: '0 F', sortieTotal: '0 F', grTotal: '0 F' } },
           recentTransactions: [],
           dynamicConfig: { period, customDate, resetConfig: this.getResetConfig(), includeArchived, totalTransactionsFound: 0 }
         };
@@ -1822,12 +1433,12 @@ class TransactionService {
 
       if (includeArchived && period === 'yesterday') {
         supervisor.accounts.forEach(account => {
-          const ancienDebutHier    = this.convertFromInt(account.previousInitialBalance || 0);
-          const ancienneSortieHier = this.convertFromInt(account.initialBalance || 0);
-          accountsByType.debut[account.type]  = ancienDebutHier;
-          accountsByType.sortie[account.type] = ancienneSortieHier;
-          totalDebutPersonnel  += ancienDebutHier;
-          totalSortiePersonnel += ancienneSortieHier;
+          const ancienDebut  = this.convertFromInt(account.previousInitialBalance || 0);
+          const ancienSortie = this.convertFromInt(account.initialBalance || 0);
+          accountsByType.debut[account.type]  = ancienDebut;
+          accountsByType.sortie[account.type] = ancienSortie;
+          totalDebutPersonnel  += ancienDebut;
+          totalSortiePersonnel += ancienSortie;
         });
       } else {
         supervisor.accounts.forEach(account => {
@@ -1845,9 +1456,7 @@ class TransactionService {
         const partnerName = this.getPartnerDisplayName(tx);
         if (partnerName && partnerName !== 'Partenaire inconnu') {
           const montant = this.convertFromInt(tx.montant);
-          if (!partenaireTransactions[partnerName]) {
-            partenaireTransactions[partnerName] = { depots: 0, retraits: 0 };
-          }
+          if (!partenaireTransactions[partnerName]) partenaireTransactions[partnerName] = { depots: 0, retraits: 0 };
           if (tx.type === 'DEPOT'   && tx.destinataireId === superviseurId) partenaireTransactions[partnerName].depots   += montant;
           if (tx.type === 'RETRAIT' && tx.destinataireId === superviseurId) partenaireTransactions[partnerName].retraits += montant;
         }
@@ -1858,13 +1467,14 @@ class TransactionService {
         if (amounts.retraits > 0) { accountsByType.sortie[`part-${partnerName}`] = amounts.retraits; totalSortiePersonnel += amounts.retraits; }
       });
 
-      let uvMasterDebut, uvMasterSortie;
+      // ── Calcul type vedette (global tous superviseurs) ────────────────────
+      let featuredDebut, featuredSortie;
       if (includeArchived && period === 'yesterday') {
-        uvMasterDebut  = uvMasterAccounts.reduce((t, a) => t + this.convertFromInt(a.previousInitialBalance || 0), 0);
-        uvMasterSortie = uvMasterAccounts.reduce((t, a) => t + this.convertFromInt(a.initialBalance || 0), 0);
+        featuredDebut  = featuredAccounts.reduce((t, a) => t + this.convertFromInt(a.previousInitialBalance || 0), 0);
+        featuredSortie = featuredAccounts.reduce((t, a) => t + this.convertFromInt(a.initialBalance || 0), 0);
       } else {
-        uvMasterDebut  = uvMasterAccounts.reduce((t, a) => t + this.convertFromInt(a.initialBalance || 0), 0);
-        uvMasterSortie = uvMasterAccounts.reduce((t, a) => t + this.convertFromInt(a.balance || 0), 0);
+        featuredDebut  = featuredAccounts.reduce((t, a) => t + this.convertFromInt(a.initialBalance || 0), 0);
+        featuredSortie = featuredAccounts.reduce((t, a) => t + this.convertFromInt(a.balance || 0), 0);
       }
 
       const grTotal = totalSortiePersonnel - totalDebutPersonnel;
@@ -1879,24 +1489,33 @@ class TransactionService {
           personne = tx.envoyeur?.nomComplet || 'Expéditeur inconnu';
         }
         if (['DEBUT_JOURNEE', 'FIN_JOURNEE'].includes(tx.type)) personne = supervisor.nomComplet;
-
         return {
-          id: tx.id, type: tx.type,
-          montant: this.convertFromInt(tx.montant),
-          description: tx.description, personne,
-          createdAt: tx.createdAt,
+          id: tx.id, type: tx.type, montant: this.convertFromInt(tx.montant),
+          description: tx.description, personne, createdAt: tx.createdAt,
           envoyeurId: tx.envoyeurId, destinataireId: tx.destinataireId,
           partenaireId: tx.partenaireId, partenaireNom: tx.partenaireNom,
           archived: tx.archived
         };
       });
 
+      const featuredFormatted = featuredSortie.toLocaleString() + ' F';
+
       return {
         superviseur: { id: supervisor.id, nom: supervisor.nomComplet, status: supervisor.status },
         period, customDate,
+        // ── Compte vedette dynamique ────────────────────────────────────────
+        featured: {
+          type:    featuredType,
+          label:   featuredLabel,
+          personal: { debut: featuredDebut, sortie: featuredSortie, formatted: featuredFormatted },
+          total:   featuredSortie,
+          formatted: featuredFormatted
+        },
+        // ── Alias de compatibilité ──────────────────────────────────────────
         uvMaster: {
-          personal: { debut: uvMasterDebut, sortie: uvMasterSortie, formatted: uvMasterSortie.toLocaleString() + ' F' },
-          total: uvMasterSortie, formatted: uvMasterSortie.toLocaleString() + ' F'
+          personal: { debut: featuredDebut, sortie: featuredSortie, formatted: featuredFormatted },
+          total:    featuredSortie,
+          formatted: featuredFormatted
         },
         comptes: accountsByType,
         totaux: {
@@ -1911,8 +1530,10 @@ class TransactionService {
         dynamicConfig: {
           period, customDate, resetConfig: this.getResetConfig(), includeArchived,
           totalTransactionsFound: allTransactions.length,
-          filterApplied: includeArchived ? 'archived_included' : 'archived_excluded',
-          dataSource: includeArchived ? 'historical_after_reset' : 'current_live'
+          filterApplied:  includeArchived ? 'archived_included' : 'archived_excluded',
+          dataSource:     includeArchived ? 'historical_after_reset' : 'current_live',
+          featuredType,
+          featuredLabel
         }
       };
 
@@ -1925,7 +1546,6 @@ class TransactionService {
   async getPartnerDashboard(partenaireId, period = 'today', customDate = null) {
     try {
       const dateFilter = this.getDateFilter(period, customDate);
-
       const [partner, availableSupervisors] = await Promise.all([
         prisma.user.findUnique({
           where: { id: partenaireId },
@@ -1933,10 +1553,7 @@ class TransactionService {
             id: true, nomComplet: true,
             transactionsEnvoyees: {
               where: { createdAt: dateFilter },
-              select: {
-                id: true, type: true, montant: true, description: true, createdAt: true,
-                destinataire: { select: { nomComplet: true, role: true } }
-              },
+              select: { id: true, type: true, montant: true, description: true, createdAt: true, destinataire: { select: { nomComplet: true, role: true } } },
               orderBy: { createdAt: 'desc' }
             }
           }
@@ -1947,34 +1564,20 @@ class TransactionService {
       if (!partner) throw new Error('Partenaire non trouvé');
 
       let totalDepots = 0, totalRetraits = 0;
-
       const transactionDetails = partner.transactionsEnvoyees.map(tx => {
         const montant = this.convertFromInt(tx.montant);
         const isDepot = tx.type === 'DEPOT';
-        if (isDepot) totalDepots += montant;
-        else totalRetraits += montant;
-
-        return {
-          id: tx.id, type: tx.type, montant,
-          description: tx.description,
-          superviseur: tx.destinataire?.nomComplet,
-          createdAt: tx.createdAt,
-          formatted: { montant: this.formatAmount(montant), type: isDepot ? 'Dépôt' : 'Retrait' }
-        };
+        if (isDepot) totalDepots += montant; else totalRetraits += montant;
+        return { id: tx.id, type: tx.type, montant, description: tx.description, superviseur: tx.destinataire?.nomComplet, createdAt: tx.createdAt, formatted: { montant: this.formatAmount(montant), type: isDepot ? 'Dépôt' : 'Retrait' } };
       });
 
       return {
         partenaire: { id: partner.id, nom: partner.nomComplet },
         period, customDate,
         statistiques: {
-          totalDepots, totalRetraits,
-          soldeNet: totalDepots - totalRetraits,
+          totalDepots, totalRetraits, soldeNet: totalDepots - totalRetraits,
           nombreTransactions: partner.transactionsEnvoyees.length,
-          formatted: {
-            totalDepots:  this.formatAmount(totalDepots),
-            totalRetraits: this.formatAmount(totalRetraits),
-            soldeNet:      this.formatAmount(totalDepots - totalRetraits, true)
-          }
+          formatted: { totalDepots: this.formatAmount(totalDepots), totalRetraits: this.formatAmount(totalRetraits), soldeNet: this.formatAmount(totalDepots - totalRetraits, true) }
         },
         transactions: transactionDetails,
         superviseursDisponibles: availableSupervisors
@@ -1986,32 +1589,23 @@ class TransactionService {
     }
   }
 
-  // =====================================
-  // AUTRES MÉTHODES UTILITAIRES
-  // =====================================
   async updateTransaction(transactionId, updateData, userId) {
     try {
-      if (!transactionId || !updateData || Object.keys(updateData).length === 0) {
-        throw new Error('Données invalides');
-      }
+      if (!transactionId || !updateData || Object.keys(updateData).length === 0) throw new Error('Données invalides');
 
       const [existingTransaction, user] = await Promise.all([
         prisma.transaction.findUnique({
           where: { id: transactionId },
           select: {
-            id: true, type: true, montant: true, description: true,
-            createdAt: true, envoyeurId: true, destinataireId: true, compteDestinationId: true,
-            partenaireId: true, partenaireNom: true,
-            archived: true, archivedAt: true,
-            envoyeur:     { select: { id: true, nomComplet: true, role: true } },
-            destinataire: { select: { id: true, nomComplet: true, role: true } },
+            id: true, type: true, montant: true, description: true, createdAt: true,
+            envoyeurId: true, destinataireId: true, compteDestinationId: true,
+            partenaireId: true, partenaireNom: true, archived: true, archivedAt: true,
+            envoyeur:          { select: { id: true, nomComplet: true, role: true } },
+            destinataire:      { select: { id: true, nomComplet: true, role: true } },
             compteDestination: { select: { id: true, balance: true, initialBalance: true } }
           }
         }),
-        prisma.user.findUnique({
-          where: { id: userId },
-          select: { id: true, role: true, nomComplet: true }
-        })
+        prisma.user.findUnique({ where: { id: userId }, select: { id: true, role: true, nomComplet: true } })
       ]);
 
       if (!existingTransaction) throw new Error('Transaction non trouvée');
@@ -2022,12 +1616,8 @@ class TransactionService {
       const isOwnTransaction = existingTransaction.destinataireId === userId;
       const ageInDays = Math.floor((new Date() - new Date(existingTransaction.createdAt)) / (1000 * 60 * 60 * 24));
 
-      if (!isAdmin && (!isSupervisor || !isOwnTransaction || ageInDays > 1)) {
-        throw new Error('Permissions insuffisantes pour modifier cette transaction');
-      }
-      if (isAdmin && ageInDays > 7) {
-        throw new Error('Transaction trop ancienne pour être modifiée (limite: 7 jours)');
-      }
+      if (!isAdmin && (!isSupervisor || !isOwnTransaction || ageInDays > 1)) throw new Error('Permissions insuffisantes pour modifier cette transaction');
+      if (isAdmin && ageInDays > 7) throw new Error('Transaction trop ancienne pour être modifiée (limite: 7 jours)');
 
       const isPartnerTransaction = !!(existingTransaction.partenaireId || existingTransaction.partenaireNom);
       const updateFields = {};
@@ -2046,94 +1636,38 @@ class TransactionService {
           const result = await prisma.$transaction(async (tx) => {
             const updatedTransaction = await tx.transaction.update({
               where: { id: transactionId },
-              data: {
-                ...updateFields,
-                archived:   existingTransaction.archived   ?? false,
-                archivedAt: existingTransaction.archivedAt ?? null
-              }
+              data: { ...updateFields, archived: existingTransaction.archived ?? false, archivedAt: existingTransaction.archivedAt ?? null }
             });
-
-            await tx.transaction.create({
-              data: {
-                montant:        newMontantInt,
-                type:           'AUDIT_MODIFICATION',
-                description:    `Modification transaction partenaire ${transactionId} - Ancien: ${this.convertFromInt(oldMontantInt)} F, Nouveau: ${newMontantFloat} F - par ${user.nomComplet}`,
-                envoyeurId:     userId,
-                destinataireId: existingTransaction.destinataireId
-              }
-            });
-
+            await tx.transaction.create({ data: { montant: newMontantInt, type: 'AUDIT_MODIFICATION', description: `Modification transaction partenaire ${transactionId} - Ancien: ${this.convertFromInt(oldMontantInt)} F, Nouveau: ${newMontantFloat} F - par ${user.nomComplet}`, envoyeurId: userId, destinataireId: existingTransaction.destinataireId } });
             return updatedTransaction;
           });
 
           setImmediate(async () => {
             try {
-              const transactionDate = new Date(existingTransaction.createdAt);
-              const dateStr = transactionDate.toISOString().split('T')[0];
+              const dateStr = new Date(existingTransaction.createdAt).toISOString().split('T')[0];
               await this.recomputeAndSaveSnapshot(existingTransaction.destinataireId, dateStr);
               console.log(`✅ Snapshot recomputed pour ${dateStr} après modification partenaire`);
-            } catch (snapshotError) {
-              console.error('⚠️ Erreur recompute snapshot (non bloquant):', snapshotError);
-            }
+            } catch (snapshotError) { console.error('⚠️ Erreur recompute snapshot (non bloquant):', snapshotError); }
           });
 
-          return {
-            success: true,
-            message: 'Transaction partenaire mise à jour avec succès',
-            data: {
-              id:          result.id,
-              type:        result.type,
-              montant:     this.convertFromInt(result.montant),
-              description: result.description,
-              updatedAt:   result.updatedAt
-            }
-          };
+          return { success: true, message: 'Transaction partenaire mise à jour avec succès', data: { id: result.id, type: result.type, montant: this.convertFromInt(result.montant), description: result.description, updatedAt: result.updatedAt } };
         }
 
         if (existingTransaction.compteDestination && newMontantInt !== oldMontantInt) {
           const difference = newMontantInt - oldMontantInt;
-
           return await prisma.$transaction(async (tx) => {
             if (existingTransaction.type === 'DEBUT_JOURNEE') {
-              await tx.account.update({
-                where: { id: existingTransaction.compteDestination.id },
-                data:  { initialBalance: { increment: difference } }
-              });
+              await tx.account.update({ where: { id: existingTransaction.compteDestination.id }, data: { initialBalance: { increment: difference } } });
             } else if (existingTransaction.type === 'FIN_JOURNEE') {
-              await tx.account.update({
-                where: { id: existingTransaction.compteDestination.id },
-                data:  { balance: { increment: difference } }
-              });
+              await tx.account.update({ where: { id: existingTransaction.compteDestination.id }, data: { balance: { increment: difference } } });
             } else if (existingTransaction.type === 'RETRAIT') {
-              if (existingTransaction.compteDestination.balance - difference < 0) {
-                throw new Error('Solde insuffisant pour cette modification');
-              }
-              await tx.account.update({
-                where: { id: existingTransaction.compteDestination.id },
-                data:  { balance: { decrement: difference } }
-              });
+              if (existingTransaction.compteDestination.balance - difference < 0) throw new Error('Solde insuffisant pour cette modification');
+              await tx.account.update({ where: { id: existingTransaction.compteDestination.id }, data: { balance: { decrement: difference } } });
             } else if (existingTransaction.type === 'DEPOT') {
-              await tx.account.update({
-                where: { id: existingTransaction.compteDestination.id },
-                data:  { balance: { increment: difference } }
-              });
+              await tx.account.update({ where: { id: existingTransaction.compteDestination.id }, data: { balance: { increment: difference } } });
             }
-
-            const updatedTransaction = await tx.transaction.update({
-              where: { id: transactionId },
-              data:  updateFields
-            });
-
-            await tx.transaction.create({
-              data: {
-                montant:        newMontantInt,
-                type:           'AUDIT_MODIFICATION',
-                description:    `Modification transaction ${transactionId} par ${user.nomComplet} - Ancien: ${this.convertFromInt(oldMontantInt)} F, Nouveau: ${newMontantFloat} F`,
-                envoyeurId:     userId,
-                destinataireId: existingTransaction.destinataireId
-              }
-            });
-
+            const updatedTransaction = await tx.transaction.update({ where: { id: transactionId }, data: updateFields });
+            await tx.transaction.create({ data: { montant: newMontantInt, type: 'AUDIT_MODIFICATION', description: `Modification transaction ${transactionId} par ${user.nomComplet} - Ancien: ${this.convertFromInt(oldMontantInt)} F, Nouveau: ${newMontantFloat} F`, envoyeurId: userId, destinataireId: existingTransaction.destinataireId } });
             return updatedTransaction;
           });
         }
@@ -2141,13 +1675,7 @@ class TransactionService {
 
       const updatedTransaction = await prisma.transaction.update({
         where: { id: transactionId },
-        data: {
-          ...updateFields,
-          ...(isPartnerTransaction && {
-            archived:   existingTransaction.archived   ?? false,
-            archivedAt: existingTransaction.archivedAt ?? null
-          })
-        }
+        data: { ...updateFields, ...(isPartnerTransaction && { archived: existingTransaction.archived ?? false, archivedAt: existingTransaction.archivedAt ?? null }) }
       });
 
       if (isPartnerTransaction) {
@@ -2155,23 +1683,11 @@ class TransactionService {
           try {
             const dateStr = new Date(existingTransaction.createdAt).toISOString().split('T')[0];
             await this.recomputeAndSaveSnapshot(existingTransaction.destinataireId, dateStr);
-          } catch (e) {
-            console.error('⚠️ Erreur recompute snapshot:', e);
-          }
+          } catch (e) { console.error('⚠️ Erreur recompute snapshot:', e); }
         });
       }
 
-      return {
-        success: true,
-        message: 'Transaction mise à jour avec succès',
-        data: {
-          id:          updatedTransaction.id,
-          type:        updatedTransaction.type,
-          montant:     this.convertFromInt(updatedTransaction.montant),
-          description: updatedTransaction.description,
-          updatedAt:   updatedTransaction.updatedAt
-        }
-      };
+      return { success: true, message: 'Transaction mise à jour avec succès', data: { id: updatedTransaction.id, type: updatedTransaction.type, montant: this.convertFromInt(updatedTransaction.montant), description: updatedTransaction.description, updatedAt: updatedTransaction.updatedAt } };
 
     } catch (error) {
       console.error('❌ Erreur updateTransaction:', error);
@@ -2182,63 +1698,31 @@ class TransactionService {
   async updateSupervisorAccount(supervisorId, accountType, accountKey, newValue, adminId) {
     try {
       const newValueInt = this.convertToInt(newValue);
-
-      const supervisor = await prisma.user.findUnique({
-        where: { id: supervisorId, role: 'SUPERVISEUR' },
-        select: { id: true, nomComplet: true }
-      });
-
+      const supervisor = await prisma.user.findUnique({ where: { id: supervisorId, role: 'SUPERVISEUR' }, select: { id: true, nomComplet: true } });
       if (!supervisor) throw new Error('Superviseur non trouvé');
 
       if (!accountKey.startsWith('part-') && !accountKey.startsWith('sup-')) {
         const account = await prisma.account.upsert({
           where: { userId_type: { userId: supervisorId, type: accountKey } },
           update: accountType === 'debut' ? { initialBalance: newValueInt } : { balance: newValueInt },
-          create: {
-            type: accountKey, userId: supervisorId,
-            balance: accountType === 'sortie' ? newValueInt : 0,
-            initialBalance: accountType === 'debut' ? newValueInt : 0
-          },
+          create: { type: accountKey, userId: supervisorId, balance: accountType === 'sortie' ? newValueInt : 0, initialBalance: accountType === 'debut' ? newValueInt : 0 },
           select: { id: true, balance: true, initialBalance: true }
         });
-
-        const oldValue = accountType === 'debut'
-          ? this.convertFromInt(account.initialBalance)
-          : this.convertFromInt(account.balance);
-
+        const oldValue = accountType === 'debut' ? this.convertFromInt(account.initialBalance) : this.convertFromInt(account.balance);
         setImmediate(async () => {
           try {
-            await prisma.transaction.create({
-              data: {
-                montant: newValueInt, type: 'AUDIT_MODIFICATION',
-                description: `Modification compte ${accountKey} (${accountType}) par admin - Ancien: ${oldValue} F, Nouveau: ${newValue} F`,
-                envoyeurId: adminId, destinataireId: supervisorId, compteDestinationId: account.id
-              }
-            });
-          } catch (auditError) {
-            console.error('Erreur audit (non-bloquante):', auditError);
-          }
+            await prisma.transaction.create({ data: { montant: newValueInt, type: 'AUDIT_MODIFICATION', description: `Modification compte ${accountKey} (${accountType}) par admin - Ancien: ${oldValue} F, Nouveau: ${newValue} F`, envoyeurId: adminId, destinataireId: supervisorId, compteDestinationId: account.id } });
+          } catch (auditError) { console.error('Erreur audit (non-bloquante):', auditError); }
         });
-
         return { oldValue, newValue, accountUpdated: true };
       } else {
         setImmediate(async () => {
           try {
-            await prisma.transaction.create({
-              data: {
-                montant: newValueInt, type: 'AUDIT_MODIFICATION',
-                description: `Tentative modification compte ${accountKey} (${accountType}) par admin`,
-                envoyeurId: adminId, destinataireId: supervisorId
-              }
-            });
-          } catch (auditError) {
-            console.error('Erreur audit (non-bloquante):', auditError);
-          }
+            await prisma.transaction.create({ data: { montant: newValueInt, type: 'AUDIT_MODIFICATION', description: `Tentative modification compte ${accountKey} (${accountType}) par admin`, envoyeurId: adminId, destinataireId: supervisorId } });
+          } catch (auditError) { console.error('Erreur audit (non-bloquante):', auditError); }
         });
-
         return { oldValue: 0, newValue, note: 'Modification enregistrée (comptes partenaires)' };
       }
-
     } catch (error) {
       console.error('❌ Erreur updateSupervisorAccount service:', error);
       throw error;
@@ -2259,14 +1743,8 @@ class TransactionService {
 
   async createSupervisorTransaction(superviseurId, transactionData) {
     try {
-      return await this.createAdminTransaction(superviseurId, {
-        ...transactionData,
-        superviseurId,
-        callerRole: 'SUPERVISEUR',   // ← forcer le rôle ici
-      });
-    } catch (error) {
-      throw error;
-    }
+      return await this.createAdminTransaction(superviseurId, { ...transactionData, superviseurId, callerRole: 'SUPERVISEUR' });
+    } catch (error) { throw error; }
   }
 
   async createPartnerTransaction(partnerId, transactionData) {
@@ -2274,45 +1752,17 @@ class TransactionService {
   }
 
   getAccountTypeLabel(type, autresLabel = 'Autres') {
-    const labels = {
-      'LIQUIDE':       'Liquide',
-      'ORANGE_MONEY':  'Orange Money',
-      'WAVE':          'Wave',
-      'UV_MASTER':     'UV Master',
-      'FREE_MONEY':    'Free Money',
-      'WESTERN_UNION': 'Western Union',
-      'RIA':           'Ria',
-      'MONEYGRAM':     'MoneyGram',
-      'AUTRES':        autresLabel
-    };
+    const labels = { 'LIQUIDE': 'Liquide', 'ORANGE_MONEY': 'Orange Money', 'WAVE': 'Wave', 'UV_MASTER': 'UV Master', 'FREE_MONEY': 'Free Money', 'WESTERN_UNION': 'Western Union', 'RIA': 'Ria', 'MONEYGRAM': 'MoneyGram', 'AUTRES': autresLabel };
     return labels[type] || type;
   }
 
   getAccountTypeIcon(type) {
-    const icons = {
-      'LIQUIDE':       '💵',
-      'ORANGE_MONEY':  '📱',
-      'WAVE':          '🌊',
-      'UV_MASTER':     '⭐',
-      'FREE_MONEY':    '📲',
-      'WESTERN_UNION': '🌍',
-      'RIA':           '💳',
-      'MONEYGRAM':     '💰',
-      'AUTRES':        '📦'
-    };
+    const icons = { 'LIQUIDE': '💵', 'ORANGE_MONEY': '📱', 'WAVE': '🌊', 'UV_MASTER': '⭐', 'FREE_MONEY': '📲', 'WESTERN_UNION': '🌍', 'RIA': '💳', 'MONEYGRAM': '💰', 'AUTRES': '📦' };
     return icons[type] || '📦';
   }
 
   getTransactionTypeLabel(type) {
-    const labels = {
-      'DEPOT':               'Dépôt',
-      'RETRAIT':             'Retrait',
-      'TRANSFERT_ENVOYE':    'Transfert envoyé',
-      'TRANSFERT_RECU':      'Transfert reçu',
-      'ALLOCATION_UV_MASTER':'Allocation UV Master',
-      'DEBUT_JOURNEE':       'Début journée',
-      'FIN_JOURNEE':         'Fin journée'
-    };
+    const labels = { 'DEPOT': 'Dépôt', 'RETRAIT': 'Retrait', 'TRANSFERT_ENVOYE': 'Transfert envoyé', 'TRANSFERT_RECU': 'Transfert reçu', 'ALLOCATION_UV_MASTER': 'Allocation UV Master', 'DEBUT_JOURNEE': 'Début journée', 'FIN_JOURNEE': 'Fin journée' };
     return labels[type] || type;
   }
 
@@ -2326,20 +1776,10 @@ class TransactionService {
 
   getPeriodLabel(period, customDate = null) {
     if (period === 'custom' && customDate) return this.formatDateForDisplay(customDate).long;
-    const labels = {
-      'today':     "Aujourd'hui",
-      'yesterday': "Hier",
-      'week':      'Cette semaine',
-      'month':     'Ce mois',
-      'year':      'Cette année',
-      'all':       'Tout'
-    };
+    const labels = { 'today': "Aujourd'hui", 'yesterday': "Hier", 'week': 'Cette semaine', 'month': 'Ce mois', 'year': 'Cette année', 'all': 'Tout' };
     return labels[period] || period;
   }
 
-  // =====================================
-  // MÉTHODES POUR DATES DISPONIBLES
-  // =====================================
   async getAvailableDates(userId = null, role = null) {
     try {
       const oneYearAgo = new Date();
@@ -2347,24 +1787,14 @@ class TransactionService {
 
       const snapshotDates = await prisma.dailySnapshot.findMany({
         where: { date: { gte: oneYearAgo }, ...(userId && { userId }) },
-        select: { date: true },
-        distinct: ['date'],
-        orderBy: { date: 'desc' }
+        select: { date: true }, distinct: ['date'], orderBy: { date: 'desc' }
       });
 
-      let transactionFilter = {
-        createdAt: { gte: oneYearAgo },
-        type: { in: ['DEPOT', 'RETRAIT', 'DEBUT_JOURNEE', 'FIN_JOURNEE'] }
-      };
-
-      if (userId && role === 'SUPERVISEUR') {
-        transactionFilter.OR = [{ destinataireId: userId }, { envoyeurId: userId }];
-      }
+      let transactionFilter = { createdAt: { gte: oneYearAgo }, type: { in: ['DEPOT', 'RETRAIT', 'DEBUT_JOURNEE', 'FIN_JOURNEE'] } };
+      if (userId && role === 'SUPERVISEUR') transactionFilter.OR = [{ destinataireId: userId }, { envoyeurId: userId }];
 
       const transactionDates = await prisma.transaction.findMany({
-        where: transactionFilter,
-        select: { createdAt: true },
-        orderBy: { createdAt: 'desc' }
+        where: transactionFilter, select: { createdAt: true }, orderBy: { createdAt: 'desc' }
       });
 
       const allDates = new Set();
@@ -2375,12 +1805,7 @@ class TransactionService {
 
       return sortedDates.slice(0, 60).map(dateStr => {
         const formatted = this.formatDateForDisplay(dateStr);
-        return {
-          value: dateStr,
-          display: formatted.short,
-          displayLong: formatted.long,
-          hasSnapshots: snapshotDates.some(snap => snap.date.toISOString().split('T')[0] === dateStr)
-        };
+        return { value: dateStr, display: formatted.short, displayLong: formatted.long, hasSnapshots: snapshotDates.some(snap => snap.date.toISOString().split('T')[0] === dateStr) };
       });
 
     } catch (error) {
@@ -2400,46 +1825,25 @@ class TransactionService {
       const testTransactions = await prisma.transaction.findMany({
         where: {
           createdAt: dateFilter,
-          ...(includeArchived ? { archived: true } : {
-            OR: [{ archived: { equals: false } }, { archived: { equals: null } }]
-          })
+          ...(includeArchived ? { archived: true } : { OR: [{ archived: { equals: false } }, { archived: { equals: null } }] })
         },
-        select: {
-          id: true, type: true, createdAt: true, archived: true,
-          destinataire: { select: { nomComplet: true } }
-        },
+        select: { id: true, type: true, createdAt: true, archived: true, destinataire: { select: { nomComplet: true } } },
         take: 10, orderBy: { createdAt: 'desc' }
       });
 
-      return {
-        testDate,
-        dateFilter: { start: dateFilter.gte.toISOString(), end: dateFilter.lte.toISOString() },
-        includeArchived,
-        transactionsFound: testTransactions.length,
-        sampleTransactions: testTransactions,
-        resetConfig: this.getResetConfig()
-      };
+      return { testDate, dateFilter: { start: dateFilter.gte.toISOString(), end: dateFilter.lte.toISOString() }, includeArchived, transactionsFound: testTransactions.length, sampleTransactions: testTransactions, resetConfig: this.getResetConfig() };
 
     } catch (error) {
       return { error: error.message };
     }
   }
 
-  // =====================================
-  // MÉTHODES DE DEBUG ET DIAGNOSTIC
-  // =====================================
-  async setResetTimeForTesting(hour, minute) {
-    this.setResetConfig(hour, minute, 0);
-  }
+  async setResetTimeForTesting(hour, minute) { this.setResetConfig(hour, minute, 0); }
 
   async testResetLogic() {
     const { isInWindow, currentTime, resetTime } = this.isInResetWindow();
     const { startOfYesterday, endOfYesterday } = this.getYesterdayRange();
-    return {
-      currentTime, resetTime, isInWindow,
-      yesterdayRange: { start: startOfYesterday.toISOString(), end: endOfYesterday.toISOString() },
-      resetConfig: this.getResetConfig()
-    };
+    return { currentTime, resetTime, isInWindow, yesterdayRange: { start: startOfYesterday.toISOString(), end: endOfYesterday.toISOString() }, resetConfig: this.getResetConfig() };
   }
 
   async getResetStatus() {
@@ -2448,23 +1852,12 @@ class TransactionService {
       const today = now.toDateString();
       const lastResetDate = await this.getLastResetDate();
       const resetConfig = this.getResetConfig();
-
       const resetToday = lastResetDate && lastResetDate.includes(today);
       const nextResetTime = new Date();
       nextResetTime.setHours(resetConfig.hour, resetConfig.minute, 0, 0);
       if (now > nextResetTime) nextResetTime.setDate(nextResetTime.getDate() + 1);
-
-      return {
-        resetExecutedToday: resetToday, lastReset: lastResetDate,
-        nextScheduledReset: nextResetTime.toISOString(),
-        currentTime: now.toISOString(), resetConfig,
-        canExecuteNow: this.isInResetWindow().isInWindow,
-        cronWorking: resetToday && lastResetDate.includes('vercel-cron')
-      };
-
-    } catch (error) {
-      return { error: error.message };
-    }
+      return { resetExecutedToday: resetToday, lastReset: lastResetDate, nextScheduledReset: nextResetTime.toISOString(), currentTime: now.toISOString(), resetConfig, canExecuteNow: this.isInResetWindow().isInWindow, cronWorking: resetToday && lastResetDate.includes('vercel-cron') };
+    } catch (error) { return { error: error.message }; }
   }
 
   async checkCronStatus() {
@@ -2472,23 +1865,10 @@ class TransactionService {
       const now = new Date();
       const today = now.toDateString();
       const lastResetDate = await this.getLastResetDate();
-
       const resetExecutedToday = lastResetDate && lastResetDate.includes(today) && lastResetDate.includes('SUCCESS');
       const isCronReset = lastResetDate && lastResetDate.includes('vercel-cron');
-
-      return {
-        cronWorking: resetExecutedToday && isCronReset,
-        lastResetDate, resetExecutedToday, isCronReset,
-        currentTime: now.toISOString(),
-        message: resetExecutedToday
-          ? (isCronReset ? 'CRON Vercel fonctionne correctement' : 'Reset manuel effectué aujourd\'hui')
-          : 'Aucun reset effectué aujourd\'hui',
-        nextCronExecution: '00:00 UTC (chaque nuit)'
-      };
-
-    } catch (error) {
-      return { cronWorking: false, error: error.message };
-    }
+      return { cronWorking: resetExecutedToday && isCronReset, lastResetDate, resetExecutedToday, isCronReset, currentTime: now.toISOString(), message: resetExecutedToday ? (isCronReset ? 'CRON Vercel fonctionne correctement' : 'Reset manuel effectué aujourd\'hui') : 'Aucun reset effectué aujourd\'hui', nextCronExecution: '00:00 UTC (chaque nuit)' };
+    } catch (error) { return { cronWorking: false, error: error.message }; }
   }
 
   async debugResetState() {
@@ -2499,45 +1879,18 @@ class TransactionService {
       todayResetTime.setHours(resetConfig.hour, resetConfig.minute, 0, 0);
 
       const [resetStatus, cronStatus, recentTransactions, accountStates] = await Promise.all([
-        this.getResetStatus(),
-        this.checkCronStatus(),
-        prisma.transaction.findMany({
-          where: { type: { in: ['DEPOT', 'RETRAIT'] }, partenaireId: { not: null } },
-          select: {
-            id: true, type: true, createdAt: true, archived: true, archivedAt: true,
-            partenaire: { select: { nomComplet: true } }
-          },
-          orderBy: { createdAt: 'desc' }, take: 20
-        }),
-        prisma.account.findMany({
-          where: { user: { role: 'SUPERVISEUR', status: 'ACTIVE' } },
-          select: {
-            type: true, balance: true, initialBalance: true, previousInitialBalance: true,
-            user: { select: { nomComplet: true } }
-          }
-        })
+        this.getResetStatus(), this.checkCronStatus(),
+        prisma.transaction.findMany({ where: { type: { in: ['DEPOT', 'RETRAIT'] }, partenaireId: { not: null } }, select: { id: true, type: true, createdAt: true, archived: true, archivedAt: true, partenaire: { select: { nomComplet: true } } }, orderBy: { createdAt: 'desc' }, take: 20 }),
+        prisma.account.findMany({ where: { user: { role: 'SUPERVISEUR', status: 'ACTIVE' } }, select: { type: true, balance: true, initialBalance: true, previousInitialBalance: true, user: { select: { nomComplet: true } } } })
       ]);
 
       return {
-        currentTime: now.toISOString(), resetConfig,
-        isAfterTodayReset: now > todayResetTime,
+        currentTime: now.toISOString(), resetConfig, isAfterTodayReset: now > todayResetTime,
         resetStatus, cronStatus,
-        recentTransactions: recentTransactions.map(tx => ({
-          type: tx.type, partner: tx.partenaire?.nomComplet,
-          createdAt: tx.createdAt.toISOString(),
-          archived: tx.archived, archivedAt: tx.archivedAt?.toISOString()
-        })),
-        accountStates: accountStates.map(acc => ({
-          user: acc.user.nomComplet, type: acc.type,
-          balance:                this.convertFromInt(acc.balance || 0),
-          initialBalance:         this.convertFromInt(acc.initialBalance || 0),
-          previousInitialBalance: acc.previousInitialBalance ? this.convertFromInt(acc.previousInitialBalance) : null
-        }))
+        recentTransactions: recentTransactions.map(tx => ({ type: tx.type, partner: tx.partenaire?.nomComplet, createdAt: tx.createdAt.toISOString(), archived: tx.archived, archivedAt: tx.archivedAt?.toISOString() })),
+        accountStates: accountStates.map(acc => ({ user: acc.user.nomComplet, type: acc.type, balance: this.convertFromInt(acc.balance || 0), initialBalance: this.convertFromInt(acc.initialBalance || 0), previousInitialBalance: acc.previousInitialBalance ? this.convertFromInt(acc.previousInitialBalance) : null }))
       };
-
-    } catch (error) {
-      return { error: error.message };
-    }
+    } catch (error) { return { error: error.message }; }
   }
 }
 
