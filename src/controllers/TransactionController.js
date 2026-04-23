@@ -173,7 +173,7 @@ class TransactionController {
       res.status(500).json({
         success: false,
         message: error.message || 'Erreur lors de la récupération du dashboard superviseur',
-        debug: error.stack  // ← temporaire pour voir l'erreur exacte
+        debug: error.stack
       });
     }
   }
@@ -238,9 +238,18 @@ class TransactionController {
       const transactionPromise = (() => {
         switch (user.role) {
           case 'ADMIN':
-            return TransactionService.createAdminTransaction(user.id, transactionData);
+            // ← callerRole transmis pour que le service sache que c'est un admin
+            return TransactionService.createAdminTransaction(user.id, {
+              ...transactionData,
+              callerRole: 'ADMIN',
+            });
           case 'SUPERVISEUR':
-            return TransactionService.createSupervisorTransaction(user.id, transactionData);
+            // ← callerRole forcé à SUPERVISEUR pour appliquer les restrictions
+            return TransactionService.createAdminTransaction(user.id, {
+              ...transactionData,
+              superviseurId: user.id,
+              callerRole: 'SUPERVISEUR',
+            });
           case 'PARTENAIRE':
             return TransactionService.createPartnerTransaction(user.id, transactionData);
           default:
@@ -254,7 +263,17 @@ class TransactionController {
 
     } catch (error) {
       console.error('❌ [OPTIMIZED] Erreur createTransaction:', error);
-      res.status(500).json({
+      // Erreurs métier (restrictions d'accès) → 400, pas 500
+      const is400 = [
+        'non autorisée',
+        'n\'est pas autorisée',
+        'Seule la saisie',
+        'désactivé',
+        'invalide',
+        'requis',
+      ].some(k => error.message.includes(k));
+
+      res.status(is400 ? 400 : 500).json({
         success: false,
         message: error.message || 'Erreur lors de la création de la transaction'
       });
@@ -276,7 +295,7 @@ class TransactionController {
         montant, 
         partenaireId,
         partenaireNom,
-        telephoneLibre    // ← NOUVEAU : optionnel, partenaire libre seulement
+        telephoneLibre
       } = req.body;
 
       console.log('🔍 [CONTROLLER] Données reçues:', {
@@ -338,6 +357,7 @@ class TransactionController {
 
       console.log('✅ [CONTROLLER] Validation passée, appel service...');
 
+      // ← callerRole: 'ADMIN' → le service ne bloquera PAS sur canEnterDebut/canEnterFin
       const result = await TransactionService.createAdminTransaction(adminId, {
         superviseurId,
         typeCompte: isPartnerTransaction ? null : typeCompte.toUpperCase(),
@@ -345,7 +365,8 @@ class TransactionController {
         montant: montantFloat,
         partenaireId: partenaireId || null,
         partenaireNom: partenaireNom || null,
-        telephoneLibre: telephoneLibre || null   // ← NOUVEAU
+        telephoneLibre: telephoneLibre || null,
+        callerRole: 'ADMIN',
       });
 
       const operationLabel = typeOperation === 'depot' ? 'Dépôt' : 'Retrait';
@@ -807,48 +828,6 @@ class TransactionController {
     }
   }
 
-  // Vérification du transfert quotidien
-  async getDashboard(req, res) {
-    try {
-      const user = req.user;
-      const { period = 'today' } = req.query;
-
-      setImmediate(() => {
-        TransactionService.checkAndTransferDaily().catch(error => {
-          console.error('Erreur transfert quotidien automatique:', error);
-        });
-      });
-
-      const dashboardPromise = (() => {
-        switch (user.role) {
-          case 'ADMIN':
-            return TransactionService.getAdminDashboard(
-              period === 'custom' ? 'custom' : period,
-              period === 'custom' ? date : null
-            );
-          case 'SUPERVISEUR':
-            return TransactionService.getSupervisorDashboard(user.id, period);
-          case 'PARTENAIRE':
-            return TransactionService.getPartnerDashboard(user.id, period);
-          default:
-            throw new Error('Rôle utilisateur non reconnu');
-        }
-      })();
-
-      const dashboardData = await dashboardPromise;
-
-      res.json({
-        success: true,
-        message: `Dashboard ${user.role.toLowerCase()} récupéré avec succès`,
-        data: { userRole: user.role, period, dashboard: dashboardData }
-      });
-
-    } catch (error) {
-      console.error('❌ Erreur getDashboard:', error);
-      res.status(500).json({ success: false, message: error.message || 'Erreur lors de la récupération du dashboard' });
-    }
-  }
-
   // Dates disponibles
   async getAvailableDates(req, res) {
     try {
@@ -949,7 +928,7 @@ class TransactionController {
         message: `${result.user.nomComplet} est maintenant un partenaire enregistré`,
         data: {
           user:      result.user,
-          codeAcces: result.codeAcces  // ⚠️ affiché UNE seule fois — l'admin doit le noter
+          codeAcces: result.codeAcces
         }
       });
 

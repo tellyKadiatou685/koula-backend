@@ -19,9 +19,23 @@ const FIXED_ACCOUNT_TYPE_LABELS = {
 
 const DEFAULT_ACTIVE_TYPES = ['LIQUIDE', 'ORANGE_MONEY', 'WAVE', 'UV_MASTER'];
 
-// Clé SystemConfig qui stocke les slots "Autres" dynamiques
-// Format JSON : [{ id: "AUTRES_1", label: "Tigo Cash" }, { id: "AUTRES_2", label: "Wari" }]
-const CUSTOM_SLOTS_KEY = 'custom_account_slots';
+const DEFAULT_ENTRY_ACCESS = {
+  LIQUIDE:       'both',
+  ORANGE_MONEY:  'both',
+  WAVE:          'both',
+  UV_MASTER:     'both',
+  FREE_MONEY:    'both',
+  WESTERN_UNION: 'fin_only',
+  RIA:           'fin_only',
+  MONEYGRAM:     'fin_only',
+};
+
+const ENTRY_ACCESS_KEY       = 'account_entry_access';
+const CUSTOM_SLOTS_KEY       = 'custom_account_slots';
+const RESET_EXCLUDED_KEY     = 'reset_excluded_types';
+const FEATURED_ACCOUNT_KEY   = 'featured_account_type';   // ← NOUVEAU
+
+const DEFAULT_FEATURED_TYPE  = 'UV_MASTER';               // ← valeur par défaut
 
 // ─── AUDIT ───────────────────────────────────────────────────────────────────
 async function createAuditLog(adminId, description) {
@@ -38,18 +52,13 @@ async function createAuditLog(adminId, description) {
   }
 }
 
-// ─── HELPER : lire les slots custom depuis SystemConfig ──────────────────────
+// ─── HELPERS CUSTOM SLOTS ────────────────────────────────────────────────────
 async function readCustomSlots() {
   const config = await prisma.systemConfig.findFirst({ where: { key: CUSTOM_SLOTS_KEY } });
   if (!config) return [];
-  try {
-    return JSON.parse(config.value); // [{ id, label }]
-  } catch {
-    return [];
-  }
+  try { return JSON.parse(config.value); } catch { return []; }
 }
 
-// ─── HELPER : sauvegarder les slots custom ───────────────────────────────────
 async function writeCustomSlots(slots) {
   await prisma.systemConfig.upsert({
     where:  { key: CUSTOM_SLOTS_KEY },
@@ -58,7 +67,6 @@ async function writeCustomSlots(slots) {
   });
 }
 
-// ─── HELPER : générer un ID unique pour un nouveau slot ─────────────────────
 function generateSlotId(slots) {
   const nums = slots
     .map(s => parseInt(s.id.replace('AUTRES_', ''), 10))
@@ -67,144 +75,332 @@ function generateSlotId(slots) {
   return `AUTRES_${next}`;
 }
 
+// ─── HELPERS ENTRY ACCESS ─────────────────────────────────────────────────────
+async function readEntryAccess() {
+  const config = await prisma.systemConfig.findFirst({ where: { key: ENTRY_ACCESS_KEY } });
+  if (!config) return { ...DEFAULT_ENTRY_ACCESS };
+  try { return { ...DEFAULT_ENTRY_ACCESS, ...JSON.parse(config.value) }; }
+  catch { return { ...DEFAULT_ENTRY_ACCESS }; }
+}
+
+async function writeEntryAccess(accessMap) {
+  await prisma.systemConfig.upsert({
+    where:  { key: ENTRY_ACCESS_KEY },
+    update: { value: JSON.stringify(accessMap) },
+    create: { key: ENTRY_ACCESS_KEY, value: JSON.stringify(accessMap) }
+  });
+}
+
+// ─── HELPERS RESET EXCLUDED ──────────────────────────────────────────────────
+async function readResetExcluded() {
+  const config = await prisma.systemConfig.findFirst({ where: { key: RESET_EXCLUDED_KEY } });
+  if (!config) return [];
+  try { return JSON.parse(config.value); } catch { return []; }
+}
+
+async function writeResetExcluded(types) {
+  await prisma.systemConfig.upsert({
+    where:  { key: RESET_EXCLUDED_KEY },
+    update: { value: JSON.stringify(types) },
+    create: { key: RESET_EXCLUDED_KEY, value: JSON.stringify(types) }
+  });
+}
+
+// ─── HELPERS FEATURED TYPE ───────────────────────────────────────────────────
+// Le type vedette est affiché en haut des stats globales (admin + superviseur).
+// Par défaut : UV_MASTER (comportement historique).
+async function readFeaturedType() {
+  const config = await prisma.systemConfig.findFirst({ where: { key: FEATURED_ACCOUNT_KEY } });
+  if (!config) return DEFAULT_FEATURED_TYPE;
+  return config.value || DEFAULT_FEATURED_TYPE;
+}
+
+async function writeFeaturedType(type) {
+  await prisma.systemConfig.upsert({
+    where:  { key: FEATURED_ACCOUNT_KEY },
+    update: { value: type },
+    create: { key: FEATURED_ACCOUNT_KEY, value: type }
+  });
+}
+
 class AccountTypeService {
 
   // ─── LECTURE PRINCIPALE ────────────────────────────────────────────────────
   async getAccountTypesConfig() {
     try {
-      const [typesConfig, customSlots] = await Promise.all([
+      const [typesConfig, customSlots, entryAccess, resetExcluded, featuredType] = await Promise.all([
         prisma.systemConfig.findFirst({ where: { key: 'active_account_types' } }),
-        readCustomSlots()
+        readCustomSlots(),
+        readEntryAccess(),
+        readResetExcluded(),
+        readFeaturedType(),    // ← NOUVEAU
       ]);
 
       const activeTypes = typesConfig ? JSON.parse(typesConfig.value) : DEFAULT_ACTIVE_TYPES;
 
-      // Types fixes
       const fixedTypes = FIXED_ACCOUNT_TYPES.map(type => ({
         value:             type,
         label:             FIXED_ACCOUNT_TYPE_LABELS[type],
         isActive:          activeTypes.includes(type),
         canCustomizeLabel: false,
         isCustomSlot:      false,
+        entryAccess:       entryAccess[type] || 'both',
+        excludeFromReset:  resetExcluded.includes(type),
+        isFeatured:        type === featuredType,   // ← NOUVEAU
       }));
 
-      // Slots "Autres" dynamiques
       const customTypes = customSlots.map(slot => ({
-        value:             slot.id,       // ex: "AUTRES_1"
-        label:             slot.label,    // ex: "Tigo Cash"
+        value:             slot.id,
+        label:             slot.label,
         isActive:          activeTypes.includes(slot.id),
         canCustomizeLabel: true,
         isCustomSlot:      true,
+        entryAccess:       entryAccess[slot.id] || 'both',
+        excludeFromReset:  resetExcluded.includes(slot.id),
+        isFeatured:        slot.id === featuredType,   // ← NOUVEAU
       }));
 
-      const allTypes = [...fixedTypes, ...customTypes];
-
+      const allTypes      = [...fixedTypes, ...customTypes];
       const activeOptions = allTypes
         .filter(t => t.isActive)
-        .map(t => ({ value: t.value, label: t.label }));
+        .map(t => ({ value: t.value, label: t.label, entryAccess: t.entryAccess }));
 
-      return { allTypes, activeTypes, activeOptions, customSlots };
+      return {
+        allTypes, activeTypes, activeOptions, customSlots,
+        entryAccess,
+        resetExcluded,
+        featuredType,    // ← NOUVEAU : type vedette courant
+      };
 
     } catch (error) {
       console.error('❌ [ACCOUNT TYPE] getAccountTypesConfig:', error);
       const fallback = DEFAULT_ACTIVE_TYPES.map(t => ({
-        value: t, label: FIXED_ACCOUNT_TYPE_LABELS[t]
+        value: t, label: FIXED_ACCOUNT_TYPE_LABELS[t], entryAccess: DEFAULT_ENTRY_ACCESS[t] || 'both'
       }));
       return {
-        allTypes:      FIXED_ACCOUNT_TYPES.map(t => ({
+        allTypes: FIXED_ACCOUNT_TYPES.map(t => ({
           value: t, label: FIXED_ACCOUNT_TYPE_LABELS[t],
           isActive: DEFAULT_ACTIVE_TYPES.includes(t),
-          canCustomizeLabel: false, isCustomSlot: false
+          canCustomizeLabel: false, isCustomSlot: false,
+          entryAccess: DEFAULT_ENTRY_ACCESS[t] || 'both',
+          excludeFromReset: false,
+          isFeatured: t === DEFAULT_FEATURED_TYPE,
         })),
         activeTypes:   DEFAULT_ACTIVE_TYPES,
         activeOptions: fallback,
-        customSlots:   []
+        customSlots:   [],
+        entryAccess:   { ...DEFAULT_ENTRY_ACCESS },
+        resetExcluded: [],
+        featuredType:  DEFAULT_FEATURED_TYPE,
       };
     }
   }
 
-  // ─── AJOUTER UN NOUVEAU SLOT "AUTRES" ─────────────────────────────────────
+  // ─── TYPE VEDETTE ─────────────────────────────────────────────────────────
+  /**
+   * Retourne le type vedette actuel + son label.
+   * Utilisé par TransactionService pour le calcul dynamique des stats globales.
+   */
+  async getFeaturedType() {
+    try {
+      const type = await readFeaturedType();
+      const label = await this.getTypeLabel(type);
+      return { type, label };
+    } catch {
+      return { type: DEFAULT_FEATURED_TYPE, label: FIXED_ACCOUNT_TYPE_LABELS[DEFAULT_FEATURED_TYPE] };
+    }
+  }
+
+  /**
+   * Définit le type vedette.
+   * Le type doit exister (fixe ou custom) mais n'a pas besoin d'être actif.
+   */
+  async setFeaturedType(adminId, accountType) {
+    // Vérifier que le type existe
+    const { allTypes } = await this.getAccountTypesConfig();
+    const found = allTypes.find(t => t.value === accountType);
+    if (!found) {
+      throw new Error(`Type de compte inconnu: "${accountType}"`);
+    }
+
+    await writeFeaturedType(accountType);
+
+    await createAuditLog(
+      adminId,
+      `Type vedette défini: "${found.label}" (${accountType})`
+    );
+
+    console.log(`✅ [FEATURED] Type vedette → ${accountType} ("${found.label}")`);
+    return { featuredType: accountType, label: found.label };
+  }
+
+  // ─── EXCLURE / INCLURE DU RESET ──────────────────────────────────────────
+  async setResetExclusion(adminId, accountType, exclude) {
+    const current = await readResetExcluded();
+
+    let updated;
+    if (exclude) {
+      updated = current.includes(accountType) ? current : [...current, accountType];
+    } else {
+      updated = current.filter(t => t !== accountType);
+    }
+
+    await writeResetExcluded(updated);
+
+    await createAuditLog(
+      adminId,
+      `Type "${accountType}" ${exclude ? 'exclu du' : 'inclus dans le'} reset quotidien`
+    );
+
+    console.log(`✅ [RESET EXCLUSION] ${accountType}: ${exclude ? 'exclu' : 'inclus'}`);
+    return { accountType, excludeFromReset: exclude, resetExcluded: updated };
+  }
+
+  async getResetExcludedTypes() {
+    return readResetExcluded();
+  }
+
+  // ─── MODIFIER L'ACCÈS SAISIE ──────────────────────────────────────────────
+  async setEntryAccess(adminId, accountType, access) {
+    const validValues = ['both', 'debut_only', 'fin_only'];
+    if (!validValues.includes(access)) {
+      throw new Error(`Valeur invalide: "${access}". Attendu: ${validValues.join(', ')}`);
+    }
+
+    const current = await readEntryAccess();
+    current[accountType] = access;
+    await writeEntryAccess(current);
+
+    const accessLabels = {
+      both:       'début + fin',
+      debut_only: 'début uniquement',
+      fin_only:   'fin uniquement'
+    };
+
+    await createAuditLog(
+      adminId,
+      `Accès saisie superviseur "${accountType}" → ${accessLabels[access]}`
+    );
+
+    console.log(`✅ [ACCOUNT TYPE] Accès saisie ${accountType}: ${access}`);
+    return { accountType, access, entryAccess: current };
+  }
+
+  // ─── VÉRIFIER ACCÈS SAISIE ────────────────────────────────────────────────
+  async canEnterDebut(accountType) {
+    try {
+      const accessMap = await readEntryAccess();
+      const access = accessMap[accountType] || 'both';
+      return access === 'both' || access === 'debut_only';
+    } catch {
+      return !['WESTERN_UNION', 'RIA', 'MONEYGRAM'].includes(accountType);
+    }
+  }
+
+  async canEnterFin(accountType) {
+    try {
+      const accessMap = await readEntryAccess();
+      const access = accessMap[accountType] || 'both';
+      return access === 'both' || access === 'fin_only';
+    } catch {
+      return true;
+    }
+  }
+
+  // ─── AJOUTER UN SLOT CUSTOM ───────────────────────────────────────────────
   async addCustomSlot(adminId, label) {
     const trimmed = label?.trim();
-    if (!trimmed || trimmed.length < 2)  throw new Error('Le nom doit contenir au moins 2 caractères');
-    if (trimmed.length > 50)             throw new Error('Le nom ne peut pas dépasser 50 caractères');
+    if (!trimmed || trimmed.length < 2) throw new Error('Le nom doit contenir au moins 2 caractères');
+    if (trimmed.length > 50)            throw new Error('Le nom ne peut pas dépasser 50 caractères');
 
     const slots = await readCustomSlots();
-
-    // Vérifier doublon de label
     if (slots.some(s => s.label.toLowerCase() === trimmed.toLowerCase())) {
       throw new Error(`Un type "${trimmed}" existe déjà`);
     }
 
-    const newId = generateSlotId(slots);
+    const newId    = generateSlotId(slots);
     const newSlots = [...slots, { id: newId, label: trimmed }];
     await writeCustomSlots(newSlots);
 
-    // Activer automatiquement le nouveau slot
-    const typesConfig = await prisma.systemConfig.findFirst({ where: { key: 'active_account_types' } });
-    const activeTypes = typesConfig ? JSON.parse(typesConfig.value) : DEFAULT_ACTIVE_TYPES;
-    const newActive = [...activeTypes, newId];
+    const typesConfig  = await prisma.systemConfig.findFirst({ where: { key: 'active_account_types' } });
+    const activeTypes  = typesConfig ? JSON.parse(typesConfig.value) : DEFAULT_ACTIVE_TYPES;
+    const newActive    = [...activeTypes, newId];
     await prisma.systemConfig.upsert({
       where:  { key: 'active_account_types' },
       update: { value: JSON.stringify(newActive) },
       create: { key: 'active_account_types', value: JSON.stringify(newActive) }
     });
 
+    const accessMap = await readEntryAccess();
+    accessMap[newId] = 'both';
+    await writeEntryAccess(accessMap);
+
     await createAuditLog(adminId, `Nouveau type personnalisé ajouté: "${trimmed}" (${newId})`);
     console.log(`✅ [ACCOUNT TYPE] Slot ajouté: ${newId} → "${trimmed}"`);
 
-    return { success: true, slot: { id: newId, label: trimmed }, activeTypes: newActive };
+    return { slot: { id: newId, label: trimmed }, activeTypes: newActive };
   }
 
-  // ─── RENOMMER UN SLOT "AUTRES" ────────────────────────────────────────────
-  // ✅ FIX BUG : stockage par ID, pas de confusion avec l'ancien "autres_label"
+  // ─── RENOMMER UN SLOT CUSTOM ──────────────────────────────────────────────
   async renameCustomSlot(adminId, slotId, newLabel) {
     const trimmed = newLabel?.trim();
-    if (!trimmed || trimmed.length < 2)  throw new Error('Le nom doit contenir au moins 2 caractères');
-    if (trimmed.length > 50)             throw new Error('Le nom ne peut pas dépasser 50 caractères');
+    if (!trimmed || trimmed.length < 2) throw new Error('Le nom doit contenir au moins 2 caractères');
+    if (trimmed.length > 50)            throw new Error('Le nom ne peut pas dépasser 50 caractères');
 
     const slots = await readCustomSlots();
-    const idx = slots.findIndex(s => s.id === slotId);
+    const idx   = slots.findIndex(s => s.id === slotId);
     if (idx === -1) throw new Error(`Slot introuvable: ${slotId}`);
 
-    // Vérifier doublon (sauf soi-même)
     if (slots.some((s, i) => i !== idx && s.label.toLowerCase() === trimmed.toLowerCase())) {
       throw new Error(`Un autre type "${trimmed}" existe déjà`);
     }
 
     const oldLabel = slots[idx].label;
-    slots[idx] = { ...slots[idx], label: trimmed };
+    slots[idx]     = { ...slots[idx], label: trimmed };
     await writeCustomSlots(slots);
 
     await createAuditLog(adminId, `Type "${oldLabel}" (${slotId}) renommé en "${trimmed}"`);
     console.log(`✅ [ACCOUNT TYPE] ${slotId}: "${oldLabel}" → "${trimmed}"`);
 
-    return { success: true, slot: { id: slotId, label: trimmed } };
+    return { slot: { id: slotId, label: trimmed } };
   }
 
-  // ─── SUPPRIMER UN SLOT "AUTRES" ───────────────────────────────────────────
+  // ─── SUPPRIMER UN SLOT CUSTOM ─────────────────────────────────────────────
   async removeCustomSlot(adminId, slotId) {
     const slots = await readCustomSlots();
-    const slot = slots.find(s => s.id === slotId);
+    const slot  = slots.find(s => s.id === slotId);
     if (!slot) throw new Error(`Slot introuvable: ${slotId}`);
 
-    const newSlots = slots.filter(s => s.id !== slotId);
-    await writeCustomSlots(newSlots);
+    await writeCustomSlots(slots.filter(s => s.id !== slotId));
 
-    // Retirer de active_account_types
     const typesConfig = await prisma.systemConfig.findFirst({ where: { key: 'active_account_types' } });
     const activeTypes = typesConfig ? JSON.parse(typesConfig.value) : [];
-    const newActive = activeTypes.filter(t => t !== slotId);
+    const newActive   = activeTypes.filter(t => t !== slotId);
     await prisma.systemConfig.upsert({
       where:  { key: 'active_account_types' },
       update: { value: JSON.stringify(newActive) },
       create: { key: 'active_account_types', value: JSON.stringify(newActive) }
     });
 
+    const accessMap = await readEntryAccess();
+    delete accessMap[slotId];
+    await writeEntryAccess(accessMap);
+
+    // Nettoyer aussi de la liste des exclusions reset
+    const excluded = await readResetExcluded();
+    await writeResetExcluded(excluded.filter(t => t !== slotId));
+
+    // Si ce slot était le type vedette, revenir au défaut
+    const currentFeatured = await readFeaturedType();
+    if (currentFeatured === slotId) {
+      await writeFeaturedType(DEFAULT_FEATURED_TYPE);
+      console.log(`⚠️  [FEATURED] Slot vedette supprimé → retour à ${DEFAULT_FEATURED_TYPE}`);
+    }
+
     await createAuditLog(adminId, `Type personnalisé supprimé: "${slot.label}" (${slotId})`);
     console.log(`✅ [ACCOUNT TYPE] Slot supprimé: ${slotId} ("${slot.label}")`);
 
-    return { success: true, slotId, removedLabel: slot.label, activeTypes: newActive };
+    return { slotId, removedLabel: slot.label, activeTypes: newActive };
   }
 
   // ─── TOGGLE ACTIF/INACTIF ─────────────────────────────────────────────────
@@ -231,8 +427,7 @@ class AccountTypeService {
     });
 
     await createAuditLog(adminId, `Type "${accountType}" ${isActive ? 'activé' : 'désactivé'}`);
-
-    return { success: true, accountType, isActive, activeTypes: newTypes };
+    return { accountType, isActive, activeTypes: newTypes };
   }
 
   // ─── HELPERS ───────────────────────────────────────────────────────────────
@@ -247,22 +442,29 @@ class AccountTypeService {
 
   async getTypeLabel(accountType) {
     if (FIXED_ACCOUNT_TYPE_LABELS[accountType]) return FIXED_ACCOUNT_TYPE_LABELS[accountType];
-    // Chercher dans les slots custom
     const slots = await readCustomSlots();
-    const slot = slots.find(s => s.id === accountType);
-    return slot?.label || accountType;
+    return slots.find(s => s.id === accountType)?.label || accountType;
   }
 
   getStaticLabel(type) { return FIXED_ACCOUNT_TYPE_LABELS[type] || type; }
   getAllPossibleTypes() { return FIXED_ACCOUNT_TYPES; }
 
-  // ─── LEGACY (ancienne API conservée pour compatibilité) ───────────────────
+  // ─── LEGACY ───────────────────────────────────────────────────────────────
   async updateAutresLabel(adminId, newLabel) {
-    // Redirige vers renameCustomSlot si AUTRES_1 existe, sinon crée un slot
-    const slots = await readCustomSlots();
+    const slots  = await readCustomSlots();
     const legacy = slots.find(s => s.id === 'AUTRES_1') || slots[0];
     if (legacy) return this.renameCustomSlot(adminId, legacy.id, newLabel);
     return this.addCustomSlot(adminId, newLabel);
+  }
+
+  async setActiveAccountTypes(adminId, types) {
+    await prisma.systemConfig.upsert({
+      where:  { key: 'active_account_types' },
+      update: { value: JSON.stringify(types) },
+      create: { key: 'active_account_types', value: JSON.stringify(types) }
+    });
+    await createAuditLog(adminId, `Types actifs reconfigurés: ${types.join(', ')}`);
+    return { activeTypes: types };
   }
 }
 

@@ -1,7 +1,7 @@
-// src/services/TransactionService.js - VERSION AVEC TYPES DE COMPTES DYNAMIQUES
+// src/services/TransactionService.js - VERSION AVEC TYPES DE COMPTES DYNAMIQUES + ACCÈS SAISIE
 import prisma from '../config/database.js';
 import NotificationService from './NotificationService.js';
-import AccountTypeService from './AccountTypeService.js'; // ← NOUVEAU
+import AccountTypeService from './AccountTypeService.js';
 
 class TransactionService {
   // =====================================
@@ -317,123 +317,116 @@ class TransactionService {
   }
 
   // =====================================
-// RECOMPUTE SNAPSHOT APRÈS MODIF HISTORIQUE
-// =====================================
-async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
-  try {
-    const date = new Date(targetDateStr);
-    date.setHours(0, 0, 0, 0);
+  // RECOMPUTE SNAPSHOT APRÈS MODIF HISTORIQUE
+  // =====================================
+  async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
+    try {
+      const date = new Date(targetDateStr);
+      date.setHours(0, 0, 0, 0);
 
-    console.log(`🔄 [SNAPSHOT RECOMPUTE] Supervisor: ${supervisorId}, Date: ${targetDateStr}`);
+      console.log(`🔄 [SNAPSHOT RECOMPUTE] Supervisor: ${supervisorId}, Date: ${targetDateStr}`);
 
-    // Récupérer les comptes actuels du superviseur pour cette date
-    // On relit les transactions archivées de ce jour pour reconstruire le snapshot
-    const resetConfig = this.getResetConfig();
+      const resetConfig = this.getResetConfig();
 
-    const startOfDay = new Date(date);
-    startOfDay.setHours(resetConfig.hour, resetConfig.minute, 0, 0);
+      const startOfDay = new Date(date);
+      startOfDay.setHours(resetConfig.hour, resetConfig.minute, 0, 0);
 
-    const nextDay = new Date(startOfDay);
-    nextDay.setDate(nextDay.getDate() + 1);
-    const endOfDay = new Date(nextDay.getTime() - 1000);
+      const nextDay = new Date(startOfDay);
+      nextDay.setDate(nextDay.getDate() + 1);
+      const endOfDay = new Date(nextDay.getTime() - 1000);
 
-    // Récupérer toutes les transactions archivées de ce jour pour ce superviseur
-    const transactions = await prisma.transaction.findMany({
-      where: {
-        destinataireId: supervisorId,
-        createdAt: { gte: startOfDay, lte: endOfDay },
-        NOT: { description: { startsWith: '[SUPPRIMÉ]' } }
-      },
-      select: {
-        type: true, montant: true,
-        partenaireId: true, partenaireNom: true,
-        partenaire: { select: { nomComplet: true } }
-      }
-    });
+      const transactions = await prisma.transaction.findMany({
+        where: {
+          destinataireId: supervisorId,
+          createdAt: { gte: startOfDay, lte: endOfDay },
+          NOT: { description: { startsWith: '[SUPPRIMÉ]' } }
+        },
+        select: {
+          type: true, montant: true,
+          partenaireId: true, partenaireNom: true,
+          partenaire: { select: { nomComplet: true } }
+        }
+      });
 
-    // Récupérer les comptes (initialBalance = fin de ce jour = début du suivant)
-    const accounts = await prisma.account.findMany({
-      where: { userId: supervisorId },
-      select: { type: true, balance: true, initialBalance: true, previousInitialBalance: true }
-    });
+      const accounts = await prisma.account.findMany({
+        where: { userId: supervisorId },
+        select: { type: true, balance: true, initialBalance: true, previousInitialBalance: true }
+      });
 
-    // Reconstruire le snapshot
-    const snapshotData = {
-      date,
-      userId: supervisorId,
-      liquideDebut:     BigInt(0),
-      orangeMoneyDebut: BigInt(0),
-      waveDebut:        BigInt(0),
-      uvMasterDebut:    BigInt(0),
-      autresDebut:      BigInt(0),
-      liquideFin:       BigInt(0),
-      orangeMoneyFin:   BigInt(0),
-      waveFin:          BigInt(0),
-      uvMasterFin:      BigInt(0),
-      autresFin:        BigInt(0),
-      debutTotal:       BigInt(0),
-      sortieTotal:      BigInt(0),
-      grTotal:          BigInt(0)
-    };
+      const snapshotData = {
+        date,
+        userId: supervisorId,
+        liquideDebut:     BigInt(0),
+        orangeMoneyDebut: BigInt(0),
+        waveDebut:        BigInt(0),
+        uvMasterDebut:    BigInt(0),
+        autresDebut:      BigInt(0),
+        liquideFin:       BigInt(0),
+        orangeMoneyFin:   BigInt(0),
+        waveFin:          BigInt(0),
+        uvMasterFin:      BigInt(0),
+        autresFin:        BigInt(0),
+        debutTotal:       BigInt(0),
+        sortieTotal:      BigInt(0),
+        grTotal:          BigInt(0)
+      };
 
-    const typeToSnapshotField = {
-      'LIQUIDE':       ['liquideDebut',      'liquideFin'],
-      'ORANGE_MONEY':  ['orangeMoneyDebut',  'orangeMoneyFin'],
-      'WAVE':          ['waveDebut',          'waveFin'],
-      'UV_MASTER':     ['uvMasterDebut',      'uvMasterFin'],
-      'AUTRES':        ['autresDebut',        'autresFin'],
-      'FREE_MONEY':    ['autresDebut',        'autresFin'],
-      'WESTERN_UNION': ['autresDebut',        'autresFin'],
-      'RIA':           ['autresDebut',        'autresFin'],
-      'MONEYGRAM':     ['autresDebut',        'autresFin'],
-    };
+      const typeToSnapshotField = {
+        'LIQUIDE':       ['liquideDebut',      'liquideFin'],
+        'ORANGE_MONEY':  ['orangeMoneyDebut',  'orangeMoneyFin'],
+        'WAVE':          ['waveDebut',          'waveFin'],
+        'UV_MASTER':     ['uvMasterDebut',      'uvMasterFin'],
+        'AUTRES':        ['autresDebut',        'autresFin'],
+        'FREE_MONEY':    ['autresDebut',        'autresFin'],
+        'WESTERN_UNION': ['autresDebut',        'autresFin'],
+        'RIA':           ['autresDebut',        'autresFin'],
+        'MONEYGRAM':     ['autresDebut',        'autresFin'],
+      };
 
-    // Pour une date passée : debut = previousInitialBalance, fin = initialBalance
-    accounts.forEach(account => {
-      const debut = account.previousInitialBalance || BigInt(0);
-      const fin   = account.initialBalance || BigInt(0);
+      accounts.forEach(account => {
+        const debut = account.previousInitialBalance || BigInt(0);
+        const fin   = account.initialBalance || BigInt(0);
 
-      const fields = typeToSnapshotField[account.type];
-      if (fields) {
-        const [debutField, finField] = fields;
-        snapshotData[debutField] += debut;
-        snapshotData[finField]   += fin;
-      }
+        const fields = typeToSnapshotField[account.type];
+        if (fields) {
+          const [debutField, finField] = fields;
+          snapshotData[debutField] += debut;
+          snapshotData[finField]   += fin;
+        }
 
-      snapshotData.debutTotal  += debut;
-      snapshotData.sortieTotal += fin;
-    });
+        snapshotData.debutTotal  += debut;
+        snapshotData.sortieTotal += fin;
+      });
 
-    // Ajouter les transactions partenaires archivées
-    let partnerDebutTotal = BigInt(0);
-    let partnerSortieTotal = BigInt(0);
+      let partnerDebutTotal = BigInt(0);
+      let partnerSortieTotal = BigInt(0);
 
-    transactions.forEach(tx => {
-      if (tx.type === 'DEPOT' || tx.type === 'RETRAIT') {
-        const montant = BigInt(tx.montant);
-        if (tx.type === 'DEPOT')   partnerDebutTotal  += montant;
-        if (tx.type === 'RETRAIT') partnerSortieTotal += montant;
-      }
-    });
+      transactions.forEach(tx => {
+        if (tx.type === 'DEPOT' || tx.type === 'RETRAIT') {
+          const montant = BigInt(tx.montant);
+          if (tx.type === 'DEPOT')   partnerDebutTotal  += montant;
+          if (tx.type === 'RETRAIT') partnerSortieTotal += montant;
+        }
+      });
 
-    snapshotData.debutTotal  += partnerDebutTotal;
-    snapshotData.sortieTotal += partnerSortieTotal;
-    snapshotData.grTotal = snapshotData.sortieTotal - snapshotData.debutTotal;
+      snapshotData.debutTotal  += partnerDebutTotal;
+      snapshotData.sortieTotal += partnerSortieTotal;
+      snapshotData.grTotal = snapshotData.sortieTotal - snapshotData.debutTotal;
 
-    const snapshot = await prisma.dailySnapshot.upsert({
-      where: { userId_date: { userId: supervisorId, date } },
-      update: snapshotData,
-      create: snapshotData
-    });
+      const snapshot = await prisma.dailySnapshot.upsert({
+        where: { userId_date: { userId: supervisorId, date } },
+        update: snapshotData,
+        create: snapshotData
+      });
 
-    console.log(`✅ [SNAPSHOT RECOMPUTE] Snapshot mis à jour pour ${supervisorId} le ${targetDateStr}`);
-    return snapshot;
+      console.log(`✅ [SNAPSHOT RECOMPUTE] Snapshot mis à jour pour ${supervisorId} le ${targetDateStr}`);
+      return snapshot;
 
-  } catch (error) {
-    console.error('❌ [SNAPSHOT RECOMPUTE] Erreur:', error);
-    throw error;
+    } catch (error) {
+      console.error('❌ [SNAPSHOT RECOMPUTE] Erreur:', error);
+      throw error;
+    }
   }
-}
 
   async createSnapshotsForAllSupervisors(date = new Date()) {
     try {
@@ -709,7 +702,8 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
         montant,
         partenaireId,
         partenaireNom,
-        telephoneLibre    // ← NOUVEAU : optionnel, partenaire libre seulement
+        telephoneLibre,
+        callerRole        // ← 'ADMIN' | 'SUPERVISEUR' — transmis par le contrôleur
       } = transactionData;
 
       const montantFloat = parseFloat(montant);
@@ -723,14 +717,41 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
 
       if (!isPartnerTransaction && typeCompte) {
         const typeCompteUpper = typeCompte.toUpperCase();
-        const typeActif = await AccountTypeService.isTypeActive(typeCompteUpper);
 
+        // ─── Vérifier que le type est actif (s'applique à tous) ──────────────
+        const typeActif = await AccountTypeService.isTypeActive(typeCompteUpper);
         if (!typeActif) {
           const label = await AccountTypeService.getTypeLabel(typeCompteUpper);
           throw new Error(
             `Le type de compte "${label}" est actuellement désactivé. ` +
             `Contactez l'administrateur.`
           );
+        }
+
+        // ─── Restrictions d'accès saisie : SUPERVISEURS uniquement ───────────
+        // Les admins ont toujours accès complet (début ET fin), peu importe la config.
+        const isSupervisorCall = callerRole === 'SUPERVISEUR';
+
+        if (isSupervisorCall && typeOperation === 'depot') {
+          // 'depot' = DEBUT_JOURNEE = saisie du début
+          const canDebut = await AccountTypeService.canEnterDebut(typeCompteUpper);
+          if (!canDebut) {
+            const label = await AccountTypeService.getTypeLabel(typeCompteUpper);
+            throw new Error(
+              `La saisie du solde de début n'est pas autorisée pour le compte "${label}". ` +
+              `Seule la saisie de fin est permise pour ce type.`
+            );
+          }
+        } else if (isSupervisorCall && typeOperation === 'retrait') {
+          // 'retrait' = FIN_JOURNEE = saisie de la fin
+          const canFin = await AccountTypeService.canEnterFin(typeCompteUpper);
+          if (!canFin) {
+            const label = await AccountTypeService.getTypeLabel(typeCompteUpper);
+            throw new Error(
+              `La saisie du solde de fin n'est pas autorisée pour le compte "${label}". ` +
+              `Seule la saisie de début est permise pour ce type.`
+            );
+          }
         }
       }
 
@@ -785,7 +806,6 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
             txData.partenaireId = partenaireId;
           } else if (partenaireNom) {
             txData.partenaireNom = partenaireNom.trim();
-            // ← NOUVEAU : stocker le téléphone libre si fourni
             if (telephoneLibre && telephoneLibre.trim()) {
               txData.telephoneLibre = telephoneLibre.trim();
             }
@@ -799,7 +819,7 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
               description: true,
               createdAt: true,
               partenaireNom: true,
-              telephoneLibre: true   // ← NOUVEAU
+              telephoneLibre: true
             }
           });
 
@@ -840,7 +860,7 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
             partnerName: partnerDisplayName,
             partnerId: partenaireId || null,
             partenaireNom: result.transaction.partenaireNom || null,
-            telephoneLibre: result.transaction.telephoneLibre || null,  // ← NOUVEAU
+            telephoneLibre: result.transaction.telephoneLibre || null,
             isRegisteredPartner: !!partenaireId,
             transactionCategory: 'PARTENAIRE'
           },
@@ -949,11 +969,6 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
   // =====================================
   // PARTENAIRES LIBRES FRÉQUENTS
   // =====================================
-
-  /**
-   * Détecte les partenaires libres (partenaireNom) qui reviennent souvent.
-   * Seuil : >= minTransactions transactions sur les derniers daysBack jours.
-   */
   async getFrequentFreePartners(superviseurId = null, daysBack = 3, minTransactions = 3) {
     try {
       const since = new Date();
@@ -987,7 +1002,6 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
         orderBy: { createdAt: 'desc' }
       });
 
-      // Grouper par nom (+ téléphone si dispo)
       const grouped = {};
       transactions.forEach(tx => {
         const nom = tx.partenaireNom.trim().toLowerCase();
@@ -1006,7 +1020,6 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
         grouped[key].superviseurs.add(tx.destinataireId);
       });
 
-      // Filtrer par seuil et formater
       const frequent = Object.values(grouped)
         .filter(g => g.transactions.length >= minTransactions)
         .map(g => {
@@ -1024,7 +1037,7 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
             totalRetraits,
             derniereTransaction: g.transactions[0].createdAt,
             superviseurIds:      [...g.superviseurs],
-            peutConvertir:       !!g.telephoneLibre  // peut convertir seulement si téléphone connu
+            peutConvertir:       !!g.telephoneLibre
           };
         })
         .sort((a, b) => b.nombreTransactions - a.nombreTransactions);
@@ -1037,11 +1050,6 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
     }
   }
 
-  /**
-   * Convertit un partenaire libre en vrai compte PARTENAIRE.
-   * Génère un code d'accès 6 chiffres (comme UserService.createUser).
-   * Le code est retourné en clair une seule fois.
-   */
   async convertFreePartnerToAccount(partenaireNom, telephoneLibre, adminId) {
     try {
       if (!partenaireNom || partenaireNom.trim().length < 2) {
@@ -1054,19 +1062,16 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
       const tel = telephoneLibre.trim();
       const nom = partenaireNom.trim();
 
-      // Vérifier que le téléphone n'est pas déjà utilisé
       const existing = await prisma.user.findUnique({ where: { telephone: tel } });
       if (existing) {
         throw new Error(`Le numéro ${tel} est déjà utilisé par un compte existant`);
       }
 
-      // Générer code d'accès 6 chiffres (même logique que UserService)
       const accessCode = Math.floor(100000 + Math.random() * 900000).toString();
       const bcrypt = await import('bcryptjs');
       const saltRounds = parseInt(process.env.BCRYPT_SALT_ROUNDS) || 12;
       const hashedCode = await bcrypt.hash(accessCode, saltRounds);
 
-      // Créer le compte partenaire
       const newUser = await prisma.user.create({
         data: {
           telephone:  tel,
@@ -1078,7 +1083,6 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
         }
       });
 
-      // Notification à l'admin
       await prisma.notification.create({
         data: {
           userId:  adminId,
@@ -1088,7 +1092,6 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
         }
       });
 
-      // Lier les anciennes transactions libres au nouveau compte
       await prisma.transaction.updateMany({
         where: {
           partenaireNom: { equals: nom, mode: 'insensitive' },
@@ -1108,7 +1111,7 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
           status:     newUser.status,
           createdAt:  newUser.createdAt
         },
-        codeAcces: accessCode  // affiché UNE seule fois à l'admin
+        codeAcces: accessCode
       };
 
     } catch (error) {
@@ -1223,13 +1226,11 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
 
   async archivePartnerTransactionsDynamic() {
     const { startOfYesterday, endOfYesterday } = this.getYesterdayRange();
-    // getYesterdayRange() utilise déjà RESET_CONFIG.hour/minute ✅
-  
+
     const result = await prisma.transaction.updateMany({
       where: {
         createdAt: { gte: startOfYesterday, lte: endOfYesterday },
         type: { in: ['DEPOT', 'RETRAIT'] },
-        // ✅ Partenaires enregistrés ET libres
         OR: [
           { partenaireId: { not: null } },
           { partenaireNom: { not: null } }
@@ -1240,38 +1241,140 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
       },
       data: { archived: true, archivedAt: new Date() }
     });
-  
+
     console.log(`✅ [DYNAMIC ARCHIVE] ${result.count} transactions archivées`, {
       start: startOfYesterday.toISOString(),
       end: endOfYesterday.toISOString()
     });
-  
+
     return result.count;
   }
 
+ // =====================================
+  // TRANSFERT DES SOLDES AU RESET
+  //
+  // Règles par défaut (si non exclu) :
+  //   - LIQUIDE  → fin devient début, fin = 0
+  //   - Tous les autres → début = 0, fin = 0
+  //
+  // Si un type est dans resetExcluded :
+  //   → ses données (début ET fin) restent intactes, aucune modif
+  // =====================================
   async transferBalancesToInitial() {
     try {
       console.log('🔄 [TRANSFER] Début du transfert des soldes...');
 
-      await prisma.$executeRaw`
-        UPDATE accounts
-        SET "previousInitialBalance" = "initialBalance",
-            "initialBalance" = balance,
-            balance = 0
-        WHERE "userId" IN (
-          SELECT id FROM users
-          WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE'
-        )
-      `;
+      // Récupérer les types exclus du reset
+      const excludedTypes = await AccountTypeService.getResetExcludedTypes();
+      console.log(`🔒 [TRANSFER] Types exclus du reset: ${excludedTypes.length > 0 ? excludedTypes.join(', ') : 'aucun'}`);
 
-      console.log(`✅ [TRANSFER] Transfert terminé pour tous les comptes actifs`);
+      // ── LIQUIDE (si non exclu) : fin → début, fin = 0 ────────────────────
+      if (!excludedTypes.includes('LIQUIDE')) {
+        await prisma.$executeRaw`
+          UPDATE accounts
+          SET "previousInitialBalance" = "initialBalance",
+              "initialBalance" = balance,
+              balance = 0
+          WHERE type = 'LIQUIDE'
+            AND "userId" IN (
+              SELECT id FROM users
+              WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE'
+            )
+        `;
+        console.log('✅ [TRANSFER] LIQUIDE : fin → début, fin = 0');
+      } else {
+        // Même si exclu, on met à jour previousInitialBalance pour les snapshots
+        await prisma.$executeRaw`
+          UPDATE accounts
+          SET "previousInitialBalance" = "initialBalance"
+          WHERE type = 'LIQUIDE'
+            AND "userId" IN (
+              SELECT id FROM users
+              WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE'
+            )
+        `;
+        console.log('🔒 [TRANSFER] LIQUIDE : exclu du reset, données conservées');
+      }
+
+      // ── Autres types ──────────────────────────────────────────────────────
+      // On traite chaque type séparément pour respecter les exclusions
+      const otherTypes = [
+        'ORANGE_MONEY', 'WAVE', 'UV_MASTER',
+        'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM'
+      ];
+
+      for (const type of otherTypes) {
+        if (excludedTypes.includes(type)) {
+          // Exclu : conserver les données, juste mettre à jour previousInitialBalance
+          await prisma.$executeRaw`
+            UPDATE accounts
+            SET "previousInitialBalance" = "initialBalance"
+            WHERE type = ${type}
+              AND "userId" IN (
+                SELECT id FROM users
+                WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE'
+              )
+          `;
+          console.log(`🔒 [TRANSFER] ${type} : exclu du reset, données conservées`);
+        } else {
+          // Non exclu : début = 0, fin = 0
+          await prisma.$executeRaw`
+            UPDATE accounts
+            SET "previousInitialBalance" = "initialBalance",
+                "initialBalance" = 0,
+                balance = 0
+            WHERE type = ${type}
+              AND "userId" IN (
+                SELECT id FROM users
+                WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE'
+              )
+          `;
+        }
+      }
+
+      // ── Slots custom (AUTRES_*) ───────────────────────────────────────────
+      // On récupère tous les types custom actifs et on les traite individuellement
+      const customSlotIds = await prisma.systemConfig.findFirst({
+        where: { key: 'custom_account_slots' }
+      });
+
+      if (customSlotIds?.value) {
+        const slots = JSON.parse(customSlotIds.value);
+        for (const slot of slots) {
+          if (excludedTypes.includes(slot.id)) {
+            await prisma.$executeRaw`
+              UPDATE accounts
+              SET "previousInitialBalance" = "initialBalance"
+              WHERE type = ${slot.id}
+                AND "userId" IN (
+                  SELECT id FROM users
+                  WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE'
+                )
+            `;
+            console.log(`🔒 [TRANSFER] ${slot.id} (${slot.label}) : exclu du reset, données conservées`);
+          } else {
+            await prisma.$executeRaw`
+              UPDATE accounts
+              SET "previousInitialBalance" = "initialBalance",
+                  "initialBalance" = 0,
+                  balance = 0
+              WHERE type = ${slot.id}
+                AND "userId" IN (
+                  SELECT id FROM users
+                  WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE'
+                )
+            `;
+          }
+        }
+      }
+
+      console.log(`✅ [TRANSFER] Transfert terminé`);
 
     } catch (error) {
       console.error('❌ [TRANSFER] Erreur transferBalancesToInitial:', error);
       throw error;
     }
   }
-
   async getLastResetDate() {
     try {
       const config = await prisma.systemConfig.findFirst({
@@ -1425,11 +1528,10 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
   async getAdminDashboard(period = 'today', customDate = null) {
     try {
       console.log(`📊 [ADMIN DASHBOARD] Période: ${period}, Date: ${customDate}`);
-  
+
       const dateFilter = this.getDateFilter(period, customDate);
       const includeArchived = await this.shouldIncludeArchivedTransactions(period, customDate);
-  
-      // ✅ FIX : snapshotDate correctement assigné
+
       let snapshotDate = null;
       if (includeArchived) {
         if (period === 'yesterday') {
@@ -1441,7 +1543,7 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
           snapshotDate.setHours(0, 0, 0, 0);
         }
       }
-  
+
       let transactionFilter = { createdAt: dateFilter };
       if (!snapshotDate) {
         transactionFilter = {
@@ -1449,9 +1551,9 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
           OR: [{ archived: { equals: false } }, { archived: { equals: null } }]
         };
       }
-  
+
       const excludeDeleted = { NOT: { description: { startsWith: '[SUPPRIMÉ]' } } };
-  
+
       const supervisors = await prisma.user.findMany({
         where: { role: 'SUPERVISEUR', status: 'ACTIVE' },
         select: {
@@ -1474,12 +1576,12 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
         },
         orderBy: { nomComplet: 'asc' }
       });
-  
+
       let totalDebutGlobal = 0, totalSortieGlobal = 0, uvMasterSolde = 0, uvMasterSorties = 0;
-  
+
       const supervisorCards = await Promise.all(supervisors.map(async (supervisor) => {
         const accountsByType = { debut: {}, sortie: {} };
-  
+
         if (snapshotDate) {
           const snapshot = await this.getSnapshotForDate(supervisor.id, snapshotDate);
           if (snapshot) {
@@ -1513,21 +1615,20 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
             }
           });
         }
-  
-        // ✅ FIX PRINCIPAL : plage basée sur RESET_CONFIG, partenaires libres inclus
+
         const partenaireTransactions = {};
         let partnerTxSource = supervisor.transactionsRecues;
-  
+
         if (snapshotDate) {
           const resetConfig = this.getResetConfig();
-  
+
           const dayStart = new Date(snapshotDate);
           dayStart.setHours(resetConfig.hour, resetConfig.minute, 0, 0);
-  
+
           const dayEnd = new Date(dayStart);
           dayEnd.setDate(dayEnd.getDate() + 1);
           dayEnd.setTime(dayEnd.getTime() - 1000);
-  
+
           partnerTxSource = await prisma.transaction.findMany({
             where: {
               destinataireId: supervisor.id,
@@ -1547,7 +1648,7 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
             }
           });
         }
-  
+
         partnerTxSource.forEach(tx => {
           const partnerName = this.getPartnerDisplayName(tx);
           if (partnerName && partnerName !== 'Partenaire inconnu') {
@@ -1559,19 +1660,19 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
             else if (tx.type === 'RETRAIT') partenaireTransactions[partnerName].retraits += montant;
           }
         });
-  
+
         Object.entries(partenaireTransactions).forEach(([partnerName, amounts]) => {
           if (amounts.depots   > 0) accountsByType.debut[`part-${partnerName}`]  = amounts.depots;
           if (amounts.retraits > 0) accountsByType.sortie[`part-${partnerName}`] = amounts.retraits;
         });
-  
+
         const debutTotal  = Object.values(accountsByType.debut).reduce((s, v) => s + v, 0);
         const sortieTotal = Object.values(accountsByType.sortie).reduce((s, v) => s + v, 0);
         const grTotal     = sortieTotal - debutTotal;
-  
+
         totalDebutGlobal  += debutTotal;
         totalSortieGlobal += sortieTotal;
-  
+
         return {
           id: supervisor.id, nom: supervisor.nomComplet, status: supervisor.status,
           comptes: accountsByType,
@@ -1585,7 +1686,7 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
           }
         };
       }));
-  
+
       const globalTotals = {
         uvMaster: {
           solde: uvMasterSolde, sorties: uvMasterSorties,
@@ -1600,7 +1701,7 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
           grTotalGlobal:     this.formatAmount(totalSortieGlobal - totalDebutGlobal, true)
         }
       };
-  
+
       return {
         period, customDate, globalTotals, supervisorCards,
         dynamicConfig: {
@@ -1612,7 +1713,7 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
           cronStatus:     'Vercel CRON géré automatiquement'
         }
       };
-  
+
     } catch (error) {
       console.error('Erreur getAdminDashboard:', error);
       throw error;
@@ -1623,37 +1724,32 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
     try {
       const dateFilter = this.getDateFilter(period, customDate);
       const includeArchived = await this.shouldIncludeArchivedTransactions(period, customDate);
-  
+
       const resetConfig = this.getResetConfig();
       const now = new Date();
       const todayResetTime = new Date(now);
       todayResetTime.setHours(resetConfig.hour, resetConfig.minute, 0, 0);
-  
+
       let transactionFilter = {};
-  
+
       if (includeArchived) {
-        const resetConfig = this.getResetConfig();
-        
-        // ✅ Calculer la plage de la date CIBLE (hier ou custom), pas d'aujourd'hui
         const targetDate = (period === 'custom' && customDate)
           ? new Date(customDate)
           : (() => { const d = new Date(); d.setDate(d.getDate() - 1); return d; })();
-      
+
         const targetDayStart = new Date(targetDate);
         targetDayStart.setHours(resetConfig.hour, resetConfig.minute, 0, 0);
-      
+
         const targetDayEnd = new Date(targetDayStart);
         targetDayEnd.setDate(targetDayEnd.getDate() + 1);
         targetDayEnd.setTime(targetDayEnd.getTime() - 1000);
-      
+
         transactionFilter = {
-          // ✅ Filtrer par createdAt sur la plage du jour cible (reset à reset)
           createdAt: { gte: targetDayStart, lte: targetDayEnd },
           AND: [
             { OR: [{ envoyeurId: superviseurId }, { destinataireId: superviseurId }] }
           ],
           archived: true,
-          // ✅ Plus de filtre archivedAt fragile — createdAt suffit
           OR: [
             { partenaireId: { not: null } },
             { partenaireNom: { not: null } }
@@ -1668,7 +1764,7 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
           ]
         };
       }
-  
+
       const [supervisor, allTransactions, uvMasterAccounts] = await Promise.all([
         prisma.user.findUnique({
           where: { id: superviseurId },
@@ -1703,9 +1799,9 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
           select: { balance: true, initialBalance: true, previousInitialBalance: true }
         })
       ]);
-  
+
       if (!supervisor) throw new Error('Superviseur non trouvé');
-  
+
       if (period === 'custom' && allTransactions.length === 0) {
         return {
           superviseur: { id: supervisor.id, nom: supervisor.nomComplet, status: supervisor.status },
@@ -1720,10 +1816,10 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
           dynamicConfig: { period, customDate, resetConfig: this.getResetConfig(), includeArchived, totalTransactionsFound: 0 }
         };
       }
-  
+
       const accountsByType = { debut: {}, sortie: {} };
       let totalDebutPersonnel = 0, totalSortiePersonnel = 0;
-  
+
       if (includeArchived && period === 'yesterday') {
         supervisor.accounts.forEach(account => {
           const ancienDebutHier    = this.convertFromInt(account.previousInitialBalance || 0);
@@ -1743,7 +1839,7 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
           totalSortiePersonnel += current;
         });
       }
-  
+
       const partenaireTransactions = {};
       allTransactions.forEach(tx => {
         const partnerName = this.getPartnerDisplayName(tx);
@@ -1756,12 +1852,12 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
           if (tx.type === 'RETRAIT' && tx.destinataireId === superviseurId) partenaireTransactions[partnerName].retraits += montant;
         }
       });
-  
+
       Object.entries(partenaireTransactions).forEach(([partnerName, amounts]) => {
         if (amounts.depots   > 0) { accountsByType.debut[`part-${partnerName}`]  = amounts.depots;   totalDebutPersonnel  += amounts.depots;   }
         if (amounts.retraits > 0) { accountsByType.sortie[`part-${partnerName}`] = amounts.retraits; totalSortiePersonnel += amounts.retraits; }
       });
-  
+
       let uvMasterDebut, uvMasterSortie;
       if (includeArchived && period === 'yesterday') {
         uvMasterDebut  = uvMasterAccounts.reduce((t, a) => t + this.convertFromInt(a.previousInitialBalance || 0), 0);
@@ -1770,9 +1866,9 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
         uvMasterDebut  = uvMasterAccounts.reduce((t, a) => t + this.convertFromInt(a.initialBalance || 0), 0);
         uvMasterSortie = uvMasterAccounts.reduce((t, a) => t + this.convertFromInt(a.balance || 0), 0);
       }
-  
+
       const grTotal = totalSortiePersonnel - totalDebutPersonnel;
-  
+
       const recentTransactions = allTransactions.map(tx => {
         let personne = '';
         if (tx.partenaireId || tx.partenaireNom) {
@@ -1783,7 +1879,7 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
           personne = tx.envoyeur?.nomComplet || 'Expéditeur inconnu';
         }
         if (['DEBUT_JOURNEE', 'FIN_JOURNEE'].includes(tx.type)) personne = supervisor.nomComplet;
-  
+
         return {
           id: tx.id, type: tx.type,
           montant: this.convertFromInt(tx.montant),
@@ -1794,7 +1890,7 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
           archived: tx.archived
         };
       });
-  
+
       return {
         superviseur: { id: supervisor.id, nom: supervisor.nomComplet, status: supervisor.status },
         period, customDate,
@@ -1819,12 +1915,13 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
           dataSource: includeArchived ? 'historical_after_reset' : 'current_live'
         }
       };
-  
+
     } catch (error) {
       console.error('Erreur getSupervisorDashboard:', error);
       throw new Error('Erreur lors de la récupération du dashboard superviseur: ' + error.message);
     }
   }
+
   async getPartnerDashboard(partenaireId, period = 'today', customDate = null) {
     try {
       const dateFilter = this.getDateFilter(period, customDate);
@@ -1897,15 +1994,15 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
       if (!transactionId || !updateData || Object.keys(updateData).length === 0) {
         throw new Error('Données invalides');
       }
-  
+
       const [existingTransaction, user] = await Promise.all([
         prisma.transaction.findUnique({
           where: { id: transactionId },
           select: {
             id: true, type: true, montant: true, description: true,
             createdAt: true, envoyeurId: true, destinataireId: true, compteDestinationId: true,
-            partenaireId: true, partenaireNom: true,  // ✅ AJOUTÉ
-            archived: true, archivedAt: true,          // ✅ AJOUTÉ
+            partenaireId: true, partenaireNom: true,
+            archived: true, archivedAt: true,
             envoyeur:     { select: { id: true, nomComplet: true, role: true } },
             destinataire: { select: { id: true, nomComplet: true, role: true } },
             compteDestination: { select: { id: true, balance: true, initialBalance: true } }
@@ -1916,40 +2013,37 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
           select: { id: true, role: true, nomComplet: true }
         })
       ]);
-  
+
       if (!existingTransaction) throw new Error('Transaction non trouvée');
       if (!user) throw new Error('Utilisateur non trouvé');
-  
+
       const isAdmin      = user.role === 'ADMIN';
       const isSupervisor = user.role === 'SUPERVISEUR';
       const isOwnTransaction = existingTransaction.destinataireId === userId;
       const ageInDays = Math.floor((new Date() - new Date(existingTransaction.createdAt)) / (1000 * 60 * 60 * 24));
-  
+
       if (!isAdmin && (!isSupervisor || !isOwnTransaction || ageInDays > 1)) {
         throw new Error('Permissions insuffisantes pour modifier cette transaction');
       }
       if (isAdmin && ageInDays > 7) {
         throw new Error('Transaction trop ancienne pour être modifiée (limite: 7 jours)');
       }
-  
+
       const isPartnerTransaction = !!(existingTransaction.partenaireId || existingTransaction.partenaireNom);
       const updateFields = {};
-  
+
       if (updateData.description) updateFields.description = updateData.description;
-  
+
       if (updateData.montant) {
         const newMontantFloat = parseFloat(updateData.montant);
         if (isNaN(newMontantFloat) || newMontantFloat <= 0) throw new Error('Montant invalide');
-  
+
         const newMontantInt = this.convertToInt(newMontantFloat);
         const oldMontantInt = Number(existingTransaction.montant);
         updateFields.montant = newMontantInt;
-  
-        // ✅ CAS 1 : Transaction partenaire (DEPOT/RETRAIT sans compte lié)
+
         if (isPartnerTransaction) {
           const result = await prisma.$transaction(async (tx) => {
-            // ✅ Conserver archived/archivedAt pour ne pas faire disparaître
-            // la transaction des données historiques
             const updatedTransaction = await tx.transaction.update({
               where: { id: transactionId },
               data: {
@@ -1958,7 +2052,7 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
                 archivedAt: existingTransaction.archivedAt ?? null
               }
             });
-  
+
             await tx.transaction.create({
               data: {
                 montant:        newMontantInt,
@@ -1968,12 +2062,10 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
                 destinataireId: existingTransaction.destinataireId
               }
             });
-  
+
             return updatedTransaction;
           });
-  
-          // ✅ Recalculer le snapshot du jour de la transaction
-          // pour que "hier" affiche le bon montant
+
           setImmediate(async () => {
             try {
               const transactionDate = new Date(existingTransaction.createdAt);
@@ -1984,7 +2076,7 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
               console.error('⚠️ Erreur recompute snapshot (non bloquant):', snapshotError);
             }
           });
-  
+
           return {
             success: true,
             message: 'Transaction partenaire mise à jour avec succès',
@@ -1997,11 +2089,10 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
             }
           };
         }
-  
-        // ✅ CAS 2 : Transaction avec compte lié (DEBUT_JOURNEE / FIN_JOURNEE)
+
         if (existingTransaction.compteDestination && newMontantInt !== oldMontantInt) {
           const difference = newMontantInt - oldMontantInt;
-  
+
           return await prisma.$transaction(async (tx) => {
             if (existingTransaction.type === 'DEBUT_JOURNEE') {
               await tx.account.update({
@@ -2027,12 +2118,12 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
                 data:  { balance: { increment: difference } }
               });
             }
-  
+
             const updatedTransaction = await tx.transaction.update({
               where: { id: transactionId },
               data:  updateFields
             });
-  
+
             await tx.transaction.create({
               data: {
                 montant:        newMontantInt,
@@ -2042,14 +2133,12 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
                 destinataireId: existingTransaction.destinataireId
               }
             });
-  
+
             return updatedTransaction;
           });
         }
       }
-  
-      // ✅ CAS 3 : Modification description uniquement (pas de montant)
-      // ou montant identique — conserver archived aussi
+
       const updatedTransaction = await prisma.transaction.update({
         where: { id: transactionId },
         data: {
@@ -2060,8 +2149,7 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
           })
         }
       });
-  
-      // ✅ Si c'est un partenaire, recalculer le snapshot même pour description
+
       if (isPartnerTransaction) {
         setImmediate(async () => {
           try {
@@ -2072,7 +2160,7 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
           }
         });
       }
-  
+
       return {
         success: true,
         message: 'Transaction mise à jour avec succès',
@@ -2084,7 +2172,7 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
           updatedAt:   updatedTransaction.updatedAt
         }
       };
-  
+
     } catch (error) {
       console.error('❌ Erreur updateTransaction:', error);
       throw error;
@@ -2173,7 +2261,8 @@ async recomputeAndSaveSnapshot(supervisorId, targetDateStr) {
     try {
       return await this.createAdminTransaction(superviseurId, {
         ...transactionData,
-        superviseurId,  // ← le superviseur s'injecte lui-même
+        superviseurId,
+        callerRole: 'SUPERVISEUR',   // ← forcer le rôle ici
       });
     } catch (error) {
       throw error;
