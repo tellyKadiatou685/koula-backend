@@ -997,44 +997,75 @@ class TransactionService {
     return result.count;
   }
 
+  // =====================================
+  // RESET DES SOLDES — RÈGLE SIMPLIFIÉE
+  // LIQUIDE  : fin → début, fin = 0
+  // AUTRES   : début = 0, fin = 0
+  // =====================================
   async transferBalancesToInitial() {
     try {
       console.log('🔄 [TRANSFER] Début du transfert des soldes...');
-      const excludedTypes = await AccountTypeService.getResetExcludedTypes();
-      console.log(`🔒 [TRANSFER] Types exclus du reset: ${excludedTypes.length > 0 ? excludedTypes.join(', ') : 'aucun'}`);
 
-      if (!excludedTypes.includes('LIQUIDE')) {
-        await prisma.$executeRaw`UPDATE accounts SET "previousInitialBalance" = "initialBalance", "initialBalance" = balance, balance = 0 WHERE type = 'LIQUIDE' AND "userId" IN (SELECT id FROM users WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE')`;
-        console.log('✅ [TRANSFER] LIQUIDE : fin → début, fin = 0');
-      } else {
-        await prisma.$executeRaw`UPDATE accounts SET "previousInitialBalance" = "initialBalance" WHERE type = 'LIQUIDE' AND "userId" IN (SELECT id FROM users WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE')`;
-        console.log('🔒 [TRANSFER] LIQUIDE : exclu du reset, données conservées');
-      }
+      // ── LIQUIDE : la fin devient le nouveau début, fin remise à 0 ──────────
+      await prisma.$executeRaw`
+        UPDATE "accounts"
+        SET "previousInitialBalance" = "initialBalance",
+            "initialBalance"         = balance,
+            balance                  = 0
+        WHERE type = 'LIQUIDE'::"AccountType"
+          AND "userId" IN (
+            SELECT id FROM "users"
+            WHERE role = 'SUPERVISEUR'::"Role" AND status = 'ACTIVE'::"UserStatus"
+          )
+      `;
+      console.log('✅ [TRANSFER] LIQUIDE : fin → début, fin = 0');
 
-      const otherTypes = ['ORANGE_MONEY', 'WAVE', 'UV_MASTER', 'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM'];
+      // ── Tous les autres types fixes : début = 0, fin = 0 ──────────────────
+      const otherTypes = [
+        'ORANGE_MONEY', 'WAVE', 'UV_MASTER',
+        'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM'
+      ];
+
       for (const type of otherTypes) {
-        if (excludedTypes.includes(type)) {
-          await prisma.$executeRaw`UPDATE accounts SET "previousInitialBalance" = "initialBalance" WHERE type = ${type} AND "userId" IN (SELECT id FROM users WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE')`;
-          console.log(`🔒 [TRANSFER] ${type} : exclu du reset, données conservées`);
-        } else {
-          await prisma.$executeRaw`UPDATE accounts SET "previousInitialBalance" = "initialBalance", "initialBalance" = 0, balance = 0 WHERE type = ${type} AND "userId" IN (SELECT id FROM users WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE')`;
-        }
+        await prisma.$executeRaw`
+          UPDATE "accounts"
+          SET "previousInitialBalance" = "initialBalance",
+              "initialBalance"         = 0,
+              balance                  = 0
+          WHERE type = ${type}::"AccountType"
+            AND "userId" IN (
+              SELECT id FROM "users"
+              WHERE role = 'SUPERVISEUR'::"Role" AND status = 'ACTIVE'::"UserStatus"
+            )
+        `;
       }
+      console.log('✅ [TRANSFER] Autres types fixes : début = 0, fin = 0');
 
-      const customSlotIds = await prisma.systemConfig.findFirst({ where: { key: 'custom_account_slots' } });
-      if (customSlotIds?.value) {
-        const slots = JSON.parse(customSlotIds.value);
+      // ── Slots custom (AUTRES_*) : stockés en TEXT, pas d'enum ─────────────
+      const customSlotConfig = await prisma.systemConfig.findFirst({
+        where: { key: 'custom_account_slots' }
+      });
+
+      if (customSlotConfig?.value) {
+        const slots = JSON.parse(customSlotConfig.value);
         for (const slot of slots) {
-          if (excludedTypes.includes(slot.id)) {
-            await prisma.$executeRaw`UPDATE accounts SET "previousInitialBalance" = "initialBalance" WHERE type = ${slot.id} AND "userId" IN (SELECT id FROM users WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE')`;
-            console.log(`🔒 [TRANSFER] ${slot.id} (${slot.label}) : exclu du reset, données conservées`);
-          } else {
-            await prisma.$executeRaw`UPDATE accounts SET "previousInitialBalance" = "initialBalance", "initialBalance" = 0, balance = 0 WHERE type = ${slot.id} AND "userId" IN (SELECT id FROM users WHERE role = 'SUPERVISEUR' AND status = 'ACTIVE')`;
-          }
+          await prisma.$executeRaw`
+            UPDATE "accounts"
+            SET "previousInitialBalance" = "initialBalance",
+                "initialBalance"         = 0,
+                balance                  = 0
+            WHERE type::text = ${slot.id}
+              AND "userId" IN (
+                SELECT id FROM "users"
+                WHERE role = 'SUPERVISEUR'::"Role" AND status = 'ACTIVE'::"UserStatus"
+              )
+          `;
         }
+        console.log(`✅ [TRANSFER] ${slots.length} slot(s) custom : début = 0, fin = 0`);
       }
 
-      console.log(`✅ [TRANSFER] Transfert terminé`);
+      console.log('✅ [TRANSFER] Transfert terminé');
+
     } catch (error) {
       console.error('❌ [TRANSFER] Erreur transferBalancesToInitial:', error);
       throw error;
@@ -1141,7 +1172,6 @@ class TransactionService {
       const dateFilter = this.getDateFilter(period, customDate);
       const includeArchived = await this.shouldIncludeArchivedTransactions(period, customDate);
 
-      // ── Type vedette dynamique ────────────────────────────────────────────
       const { type: featuredType, label: featuredLabel } = await AccountTypeService.getFeaturedType();
       console.log(`⭐ [FEATURED] Type vedette: ${featuredType} ("${featuredLabel}")`);
 
@@ -1199,8 +1229,17 @@ class TransactionService {
             Object.assign(accountsByType.debut, snapshot.comptes.debut);
             Object.assign(accountsByType.sortie, snapshot.comptes.sortie);
 
-            // Accumuler le type vedette depuis le snapshot
-            // Le snapshot stocke les clés standard; pour un type custom on lit depuis comptes
+            // ✅ FIX : les slots custom (AUTRES_*) ne sont pas dans le snapshot
+            // → on les récupère directement depuis les comptes du superviseur
+            supervisor.accounts.forEach(account => {
+              if (account.type.startsWith('AUTRES_')) {
+                const ancienDebut  = this.convertFromInt(account.previousInitialBalance || 0);
+                const ancienSortie = this.convertFromInt(account.initialBalance || 0);
+                accountsByType.debut[account.type]  = ancienDebut;
+                accountsByType.sortie[account.type] = ancienSortie;
+              }
+            });
+
             const snapshotDebut  = snapshot.comptes.debut[featuredType]  ?? 0;
             const snapshotSortie = snapshot.comptes.sortie[featuredType] ?? 0;
             featuredSolde   += snapshotDebut;
@@ -1292,7 +1331,6 @@ class TransactionService {
       }));
 
       const globalTotals = {
-        // ── Compte vedette dynamique ──────────────────────────────────────────
         featured: {
           type:    featuredType,
           label:   featuredLabel,
@@ -1303,7 +1341,6 @@ class TransactionService {
             sorties: this.formatAmount(featuredSorties)
           }
         },
-        // ── Alias de compatibilité (peut être supprimé plus tard) ─────────────
         uvMaster: {
           solde:   featuredSolde,
           sorties: featuredSorties,
@@ -1348,7 +1385,6 @@ class TransactionService {
       const dateFilter = this.getDateFilter(period, customDate);
       const includeArchived = await this.shouldIncludeArchivedTransactions(period, customDate);
 
-      // ── Type vedette dynamique ────────────────────────────────────────────
       const { type: featuredType, label: featuredLabel } = await AccountTypeService.getFeaturedType();
 
       const resetConfig = this.getResetConfig();
@@ -1406,7 +1442,6 @@ class TransactionService {
           orderBy: { createdAt: 'desc' },
           take: 50
         }),
-        // Récupérer le type vedette sur TOUS les superviseurs actifs
         prisma.account.findMany({
           where: { type: featuredType, user: { role: 'SUPERVISEUR', status: 'ACTIVE' } },
           select: { balance: true, initialBalance: true, previousInitialBalance: true }
@@ -1435,6 +1470,7 @@ class TransactionService {
         supervisor.accounts.forEach(account => {
           const ancienDebut  = this.convertFromInt(account.previousInitialBalance || 0);
           const ancienSortie = this.convertFromInt(account.initialBalance || 0);
+          // ✅ FIX : on utilise account.type comme clé → les AUTRES_* gardent leur nom
           accountsByType.debut[account.type]  = ancienDebut;
           accountsByType.sortie[account.type] = ancienSortie;
           totalDebutPersonnel  += ancienDebut;
@@ -1467,7 +1503,6 @@ class TransactionService {
         if (amounts.retraits > 0) { accountsByType.sortie[`part-${partnerName}`] = amounts.retraits; totalSortiePersonnel += amounts.retraits; }
       });
 
-      // ── Calcul type vedette (global tous superviseurs) ────────────────────
       let featuredDebut, featuredSortie;
       if (includeArchived && period === 'yesterday') {
         featuredDebut  = featuredAccounts.reduce((t, a) => t + this.convertFromInt(a.previousInitialBalance || 0), 0);
@@ -1503,7 +1538,6 @@ class TransactionService {
       return {
         superviseur: { id: supervisor.id, nom: supervisor.nomComplet, status: supervisor.status },
         period, customDate,
-        // ── Compte vedette dynamique ────────────────────────────────────────
         featured: {
           type:    featuredType,
           label:   featuredLabel,
@@ -1511,7 +1545,6 @@ class TransactionService {
           total:   featuredSortie,
           formatted: featuredFormatted
         },
-        // ── Alias de compatibilité ──────────────────────────────────────────
         uvMaster: {
           personal: { debut: featuredDebut, sortie: featuredSortie, formatted: featuredFormatted },
           total:    featuredSortie,

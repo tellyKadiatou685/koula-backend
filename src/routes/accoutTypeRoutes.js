@@ -48,33 +48,6 @@ router.patch('/custom/:slotId', async (req, res) => {
   }
 });
 
-// ─── PATCH /api/accountype/:type/reset-exclude ───────────────────────────────
-router.patch('/:type/reset-exclude', async (req, res) => {
-  try {
-    const { type } = req.params;
-    const { exclude } = req.body;
-
-    if (typeof exclude !== 'boolean') {
-      return res.status(400).json({
-        success: false,
-        message: '"exclude" doit être un booléen (true ou false)'
-      });
-    }
-
-    const result = await AccountTypeService.setResetExclusion(getAdminId(req), type, exclude);
-
-    res.json({
-      success: true,
-      message: `Type "${type}" ${exclude ? 'exclu du' : 'inclus dans le'} reset quotidien`,
-      data: result
-    });
-
-  } catch (error) {
-    console.error('❌ [ROUTE] reset-exclude:', error);
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
 // ─── DELETE /api/accountype/custom/:slotId ───────────────────────────────────
 router.delete('/custom/:slotId', async (req, res) => {
   try {
@@ -140,6 +113,7 @@ router.patch('/:type/toggle', async (req, res) => {
     res.status(400).json({ success: false, message: error.message });
   }
 });
+
 // ─── PATCH /api/accountype/:type/featured ────────────────────────────────────
 router.patch('/:type/featured', async (req, res) => {
   try {
@@ -155,6 +129,7 @@ router.patch('/:type/featured', async (req, res) => {
     res.status(400).json({ success: false, message: error.message });
   }
 });
+
 // ─── POST /api/accountype ────────────────────────────────────────────────────
 router.post('/', async (req, res) => {
   try {

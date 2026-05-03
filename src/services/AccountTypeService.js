@@ -30,12 +30,11 @@ const DEFAULT_ENTRY_ACCESS = {
   MONEYGRAM:     'fin_only',
 };
 
-const ENTRY_ACCESS_KEY       = 'account_entry_access';
-const CUSTOM_SLOTS_KEY       = 'custom_account_slots';
-const RESET_EXCLUDED_KEY     = 'reset_excluded_types';
-const FEATURED_ACCOUNT_KEY   = 'featured_account_type';   // ← NOUVEAU
+const ENTRY_ACCESS_KEY     = 'account_entry_access';
+const CUSTOM_SLOTS_KEY     = 'custom_account_slots';
+const FEATURED_ACCOUNT_KEY = 'featured_account_type';
 
-const DEFAULT_FEATURED_TYPE  = 'UV_MASTER';               // ← valeur par défaut
+const DEFAULT_FEATURED_TYPE = 'UV_MASTER';
 
 // ─── AUDIT ───────────────────────────────────────────────────────────────────
 async function createAuditLog(adminId, description) {
@@ -91,24 +90,7 @@ async function writeEntryAccess(accessMap) {
   });
 }
 
-// ─── HELPERS RESET EXCLUDED ──────────────────────────────────────────────────
-async function readResetExcluded() {
-  const config = await prisma.systemConfig.findFirst({ where: { key: RESET_EXCLUDED_KEY } });
-  if (!config) return [];
-  try { return JSON.parse(config.value); } catch { return []; }
-}
-
-async function writeResetExcluded(types) {
-  await prisma.systemConfig.upsert({
-    where:  { key: RESET_EXCLUDED_KEY },
-    update: { value: JSON.stringify(types) },
-    create: { key: RESET_EXCLUDED_KEY, value: JSON.stringify(types) }
-  });
-}
-
 // ─── HELPERS FEATURED TYPE ───────────────────────────────────────────────────
-// Le type vedette est affiché en haut des stats globales (admin + superviseur).
-// Par défaut : UV_MASTER (comportement historique).
 async function readFeaturedType() {
   const config = await prisma.systemConfig.findFirst({ where: { key: FEATURED_ACCOUNT_KEY } });
   if (!config) return DEFAULT_FEATURED_TYPE;
@@ -128,12 +110,11 @@ class AccountTypeService {
   // ─── LECTURE PRINCIPALE ────────────────────────────────────────────────────
   async getAccountTypesConfig() {
     try {
-      const [typesConfig, customSlots, entryAccess, resetExcluded, featuredType] = await Promise.all([
+      const [typesConfig, customSlots, entryAccess, featuredType] = await Promise.all([
         prisma.systemConfig.findFirst({ where: { key: 'active_account_types' } }),
         readCustomSlots(),
         readEntryAccess(),
-        readResetExcluded(),
-        readFeaturedType(),    // ← NOUVEAU
+        readFeaturedType(),
       ]);
 
       const activeTypes = typesConfig ? JSON.parse(typesConfig.value) : DEFAULT_ACTIVE_TYPES;
@@ -145,8 +126,7 @@ class AccountTypeService {
         canCustomizeLabel: false,
         isCustomSlot:      false,
         entryAccess:       entryAccess[type] || 'both',
-        excludeFromReset:  resetExcluded.includes(type),
-        isFeatured:        type === featuredType,   // ← NOUVEAU
+        isFeatured:        type === featuredType,
       }));
 
       const customTypes = customSlots.map(slot => ({
@@ -156,8 +136,7 @@ class AccountTypeService {
         canCustomizeLabel: true,
         isCustomSlot:      true,
         entryAccess:       entryAccess[slot.id] || 'both',
-        excludeFromReset:  resetExcluded.includes(slot.id),
-        isFeatured:        slot.id === featuredType,   // ← NOUVEAU
+        isFeatured:        slot.id === featuredType,
       }));
 
       const allTypes      = [...fixedTypes, ...customTypes];
@@ -168,8 +147,7 @@ class AccountTypeService {
       return {
         allTypes, activeTypes, activeOptions, customSlots,
         entryAccess,
-        resetExcluded,
-        featuredType,    // ← NOUVEAU : type vedette courant
+        featuredType,
       };
 
     } catch (error) {
@@ -183,24 +161,18 @@ class AccountTypeService {
           isActive: DEFAULT_ACTIVE_TYPES.includes(t),
           canCustomizeLabel: false, isCustomSlot: false,
           entryAccess: DEFAULT_ENTRY_ACCESS[t] || 'both',
-          excludeFromReset: false,
           isFeatured: t === DEFAULT_FEATURED_TYPE,
         })),
         activeTypes:   DEFAULT_ACTIVE_TYPES,
         activeOptions: fallback,
         customSlots:   [],
         entryAccess:   { ...DEFAULT_ENTRY_ACCESS },
-        resetExcluded: [],
         featuredType:  DEFAULT_FEATURED_TYPE,
       };
     }
   }
 
   // ─── TYPE VEDETTE ─────────────────────────────────────────────────────────
-  /**
-   * Retourne le type vedette actuel + son label.
-   * Utilisé par TransactionService pour le calcul dynamique des stats globales.
-   */
   async getFeaturedType() {
     try {
       const type = await readFeaturedType();
@@ -211,12 +183,7 @@ class AccountTypeService {
     }
   }
 
-  /**
-   * Définit le type vedette.
-   * Le type doit exister (fixe ou custom) mais n'a pas besoin d'être actif.
-   */
   async setFeaturedType(adminId, accountType) {
-    // Vérifier que le type existe
     const { allTypes } = await this.getAccountTypesConfig();
     const found = allTypes.find(t => t.value === accountType);
     if (!found) {
@@ -232,32 +199,6 @@ class AccountTypeService {
 
     console.log(`✅ [FEATURED] Type vedette → ${accountType} ("${found.label}")`);
     return { featuredType: accountType, label: found.label };
-  }
-
-  // ─── EXCLURE / INCLURE DU RESET ──────────────────────────────────────────
-  async setResetExclusion(adminId, accountType, exclude) {
-    const current = await readResetExcluded();
-
-    let updated;
-    if (exclude) {
-      updated = current.includes(accountType) ? current : [...current, accountType];
-    } else {
-      updated = current.filter(t => t !== accountType);
-    }
-
-    await writeResetExcluded(updated);
-
-    await createAuditLog(
-      adminId,
-      `Type "${accountType}" ${exclude ? 'exclu du' : 'inclus dans le'} reset quotidien`
-    );
-
-    console.log(`✅ [RESET EXCLUSION] ${accountType}: ${exclude ? 'exclu' : 'inclus'}`);
-    return { accountType, excludeFromReset: exclude, resetExcluded: updated };
-  }
-
-  async getResetExcludedTypes() {
-    return readResetExcluded();
   }
 
   // ─── MODIFIER L'ACCÈS SAISIE ──────────────────────────────────────────────
@@ -385,10 +326,6 @@ class AccountTypeService {
     const accessMap = await readEntryAccess();
     delete accessMap[slotId];
     await writeEntryAccess(accessMap);
-
-    // Nettoyer aussi de la liste des exclusions reset
-    const excluded = await readResetExcluded();
-    await writeResetExcluded(excluded.filter(t => t !== slotId));
 
     // Si ce slot était le type vedette, revenir au défaut
     const currentFeatured = await readFeaturedType();
