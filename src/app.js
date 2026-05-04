@@ -37,7 +37,8 @@ const corsOptions = {
       'https://koula.telly-tech.com',
       'https://fancy-voice-ad1a.kadiatoutelly685.workers.dev',
       'https://koula-backend.vercel.app' ,// ← ajoute aussi ça
-       'https://app-tellytech-oair.vercel.app'
+       'https://app-tellytech-oair.vercel.app',
+       'https://koula.telly-tech.com'
     ];
     
     // Autoriser les requêtes sans origine (Postman, curl, etc.)

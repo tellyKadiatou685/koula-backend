@@ -1012,10 +1012,10 @@ class TransactionService {
         SET "previousInitialBalance" = "initialBalance",
             "initialBalance"         = balance,
             balance                  = 0
-        WHERE type = 'LIQUIDE'::"AccountType"
+        WHERE type::text = 'LIQUIDE'
           AND "userId" IN (
             SELECT id FROM "users"
-            WHERE role = 'SUPERVISEUR'::"Role" AND status = 'ACTIVE'::"UserStatus"
+            WHERE role::text = 'SUPERVISEUR' AND status::text = 'ACTIVE'
           )
       `;
       console.log('✅ [TRANSFER] LIQUIDE : fin → début, fin = 0');
@@ -1032,10 +1032,10 @@ class TransactionService {
           SET "previousInitialBalance" = "initialBalance",
               "initialBalance"         = 0,
               balance                  = 0
-          WHERE type = ${type}::"AccountType"
+          WHERE type::text = ${type}
             AND "userId" IN (
               SELECT id FROM "users"
-              WHERE role = 'SUPERVISEUR'::"Role" AND status = 'ACTIVE'::"UserStatus"
+              WHERE role::text = 'SUPERVISEUR' AND status::text = 'ACTIVE'
             )
         `;
       }
@@ -1057,7 +1057,7 @@ class TransactionService {
             WHERE type::text = ${slot.id}
               AND "userId" IN (
                 SELECT id FROM "users"
-                WHERE role = 'SUPERVISEUR'::"Role" AND status = 'ACTIVE'::"UserStatus"
+                WHERE role::text = 'SUPERVISEUR' AND status::text = 'ACTIVE'
               )
           `;
         }
@@ -1229,8 +1229,6 @@ class TransactionService {
             Object.assign(accountsByType.debut, snapshot.comptes.debut);
             Object.assign(accountsByType.sortie, snapshot.comptes.sortie);
 
-            // ✅ FIX : les slots custom (AUTRES_*) ne sont pas dans le snapshot
-            // → on les récupère directement depuis les comptes du superviseur
             supervisor.accounts.forEach(account => {
               if (account.type.startsWith('AUTRES_')) {
                 const ancienDebut  = this.convertFromInt(account.previousInitialBalance || 0);
@@ -1470,7 +1468,6 @@ class TransactionService {
         supervisor.accounts.forEach(account => {
           const ancienDebut  = this.convertFromInt(account.previousInitialBalance || 0);
           const ancienSortie = this.convertFromInt(account.initialBalance || 0);
-          // ✅ FIX : on utilise account.type comme clé → les AUTRES_* gardent leur nom
           accountsByType.debut[account.type]  = ancienDebut;
           accountsByType.sortie[account.type] = ancienSortie;
           totalDebutPersonnel  += ancienDebut;
