@@ -28,7 +28,7 @@ const validateAccountType = (req, res, next) => {
   const { typeCompte, partenaireId, partenaireNom } = req.body;
   if (partenaireId || partenaireNom) return next();
   const validTypes = ['LIQUIDE', 'ORANGE_MONEY', 'WAVE', 'UV_MASTER', 'AUTRES',
-                      'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM'];
+                      'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM','SEDDO'];
   if (!typeCompte || !validTypes.includes(typeCompte.toUpperCase())) {
     return res.status(400).json({ success: false, message: `Type de compte invalide. Types autorisés: ${validTypes.join(', ')}` });
   }

@@ -75,7 +75,7 @@ function generateSlotId(slots) {
 }
 
 // ─── HELPERS ENTRY ACCESS ─────────────────────────────────────────────────────
-async function readEntryAccess() {
+export async function readEntryAccess() {
   const config = await prisma.systemConfig.findFirst({ where: { key: ENTRY_ACCESS_KEY } });
   if (!config) return { ...DEFAULT_ENTRY_ACCESS };
   try { return { ...DEFAULT_ENTRY_ACCESS, ...JSON.parse(config.value) }; }
@@ -327,7 +327,6 @@ class AccountTypeService {
     delete accessMap[slotId];
     await writeEntryAccess(accessMap);
 
-    // Si ce slot était le type vedette, revenir au défaut
     const currentFeatured = await readFeaturedType();
     if (currentFeatured === slotId) {
       await writeFeaturedType(DEFAULT_FEATURED_TYPE);

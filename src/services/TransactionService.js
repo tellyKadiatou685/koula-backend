@@ -1,7 +1,7 @@
-// src/services/TransactionService.js - VERSION AVEC TYPES DE COMPTES DYNAMIQUES + ACCÈS SAISIE
+// src/services/TransactionService.js - VERSION AVEC TYPES DE COMPTES DYNAMIQUES + ACCÈS SAISIE + F2
 import prisma from '../config/database.js';
 import NotificationService from './NotificationService.js';
-import AccountTypeService from './AccountTypeService.js';
+import AccountTypeService, { readEntryAccess } from './AccountTypeService.js';
 
 class TransactionService {
   static RESET_CONFIG = {
@@ -73,7 +73,7 @@ class TransactionService {
           userId: supervisor.id,
           title: 'Dashboard Actualisé',
           message: `Reset quotidien effectué à ${now.getHours()}:${now.getMinutes().toString().padStart(2, '0')}. Vos soldes ont été transférés et les données mises à jour.`,
-          type: 'RESET_SUPERVISOR'
+          type: 'AUDIT_MODIFICATION'
         });
       });
 
@@ -82,7 +82,7 @@ class TransactionService {
           userId: admin.id,
           title: 'Reset Quotidien Terminé',
           message: `Reset effectué avec succès : ${archivedCount} transactions archivées, ${cleanedCount} nettoyées. Tous les dashboards sont à jour.`,
-          type: 'RESET_ADMIN'
+          type: 'AUDIT_MODIFICATION'
         });
       });
 
@@ -91,7 +91,7 @@ class TransactionService {
           userId: partner.id,
           title: 'Nouveau Jour Commencé',
           message: `Les compteurs ont été remis à zéro. Nouveau cycle de transactions disponible.`,
-          type: 'RESET_PARTNER'
+          type: 'DEPOT_PARTENAIRE'
         });
       });
 
@@ -211,9 +211,39 @@ class TransactionService {
     }
   }
 
-  // =====================================
-  // SYSTÈME DE SNAPSHOTS QUOTIDIENS
-  // =====================================
+  // ── Mapping typeToSnapshotField partagé ────────────────────────────────────
+  getTypeToSnapshotField() {
+    return {
+      'LIQUIDE':       ['liquideDebut',      'liquideFin'      ],
+      'ORANGE_MONEY':  ['orangeMoneyDebut',  'orangeMoneyFin'  ],
+      'WAVE':          ['waveDebut',         'waveFin'         ],
+      'UV_MASTER':     ['uvMasterDebut',     'uvMasterFin'     ],
+      'AUTRES':        ['autresDebut',       'autresFin'       ],
+      'FREE_MONEY':    ['freeMoneyDebut',    'freeMoneyFin'    ],
+      'WESTERN_UNION': ['westernUnionDebut', 'westernUnionFin' ],
+      'RIA':           ['riaDebut',          'riaFin'          ],
+      'MONEYGRAM':     ['moneygramDebut',    'moneygramFin'    ],
+    };
+  }
+
+  // ── snapshotData vide partagé ──────────────────────────────────────────────
+  emptySnapshotData(userId, date) {
+    return {
+      date, userId,
+      liquideDebut:      BigInt(0), liquideFin:       BigInt(0),
+      orangeMoneyDebut:  BigInt(0), orangeMoneyFin:   BigInt(0),
+      waveDebut:         BigInt(0), waveFin:          BigInt(0),
+      uvMasterDebut:     BigInt(0), uvMasterFin:      BigInt(0),
+      autresDebut:       BigInt(0), autresFin:        BigInt(0),
+      freeMoneyDebut:    BigInt(0), freeMoneyFin:     BigInt(0),
+      westernUnionDebut: BigInt(0), westernUnionFin:  BigInt(0),
+      riaDebut:          BigInt(0), riaFin:           BigInt(0),
+      moneygramDebut:    BigInt(0), moneygramFin:     BigInt(0),
+      debutTotal:        BigInt(0), sortieTotal:      BigInt(0),
+      grTotal:           BigInt(0)
+    };
+  }
+
   async createDailySnapshot(userId, date = new Date()) {
     try {
       const targetDate = new Date(date);
@@ -221,50 +251,40 @@ class TransactionService {
 
       console.log(`📸 [SNAPSHOT] Création snapshot pour ${userId} le ${targetDate.toISOString().split('T')[0]}`);
 
+      const accessMap = await readEntryAccess();
+
       const accounts = await prisma.account.findMany({
         where: { userId },
-        select: { type: true, balance: true, initialBalance: true }
+        select: { type: true, balance: true, initialBalance: true, finSecondaire: true }
       });
 
-      const snapshotData = {
-        date: targetDate,
-        userId,
-        liquideDebut:     BigInt(0),
-        orangeMoneyDebut: BigInt(0),
-        waveDebut:        BigInt(0),
-        uvMasterDebut:    BigInt(0),
-        autresDebut:      BigInt(0),
-        liquideFin:       BigInt(0),
-        orangeMoneyFin:   BigInt(0),
-        waveFin:          BigInt(0),
-        uvMasterFin:      BigInt(0),
-        autresFin:        BigInt(0),
-        debutTotal:       BigInt(0),
-        sortieTotal:      BigInt(0),
-        grTotal:          BigInt(0)
-      };
-
-      const typeToSnapshotField = {
-        'LIQUIDE':       ['liquideDebut',      'liquideFin'],
-        'ORANGE_MONEY':  ['orangeMoneyDebut',  'orangeMoneyFin'],
-        'WAVE':          ['waveDebut',          'waveFin'],
-        'UV_MASTER':     ['uvMasterDebut',      'uvMasterFin'],
-        'AUTRES':        ['autresDebut',        'autresFin'],
-        'FREE_MONEY':    ['autresDebut',        'autresFin'],
-        'WESTERN_UNION': ['autresDebut',        'autresFin'],
-        'RIA':           ['autresDebut',        'autresFin'],
-        'MONEYGRAM':     ['autresDebut',        'autresFin'],
-      };
+      const snapshotData = this.emptySnapshotData(userId, targetDate);
+      const typeToSnapshotField = this.getTypeToSnapshotField();
+      const extraTypes = {};
 
       accounts.forEach(account => {
-        const debut = account.initialBalance;
-        const fin   = account.balance;
+        const access = accessMap[account.type] || 'both';
+
+        let debut, fin;
+        if (access === 'fin_only') {
+          debut = BigInt(0);
+          fin   = account.balance;
+        } else {
+          debut = account.initialBalance;
+          fin   = account.balance;
+        }
 
         const fields = typeToSnapshotField[account.type];
         if (fields) {
           const [debutField, finField] = fields;
           snapshotData[debutField] += debut;
           snapshotData[finField]   += fin;
+        } else {
+          extraTypes[account.type] = {
+            debut: debut.toString(),
+            fin:   fin.toString(),
+            finSecondaire: (account.finSecondaire || BigInt(0)).toString()
+          };
         }
 
         snapshotData.debutTotal  += debut;
@@ -274,10 +294,20 @@ class TransactionService {
       snapshotData.grTotal = snapshotData.sortieTotal - snapshotData.debutTotal;
 
       const snapshot = await prisma.dailySnapshot.upsert({
-        where: { userId_date: { userId, date: targetDate } },
+        where:  { userId_date: { userId, date: targetDate } },
         update: snapshotData,
         create: snapshotData
       });
+
+      if (Object.keys(extraTypes).length > 0) {
+        const extraKey = `snapshot_extra_${userId}_${targetDate.toISOString().split('T')[0]}`;
+        await prisma.systemConfig.upsert({
+          where:  { key: extraKey },
+          update: { value: JSON.stringify(extraTypes) },
+          create: { key: extraKey, value: JSON.stringify(extraTypes) }
+        });
+        console.log(`📸 [SNAPSHOT EXTRA] Slots custom sauvegardés pour ${userId}:`, extraTypes);
+      }
 
       console.log(`✅ [SNAPSHOT] Snapshot créé pour ${userId}`);
       return snapshot;
@@ -292,17 +322,56 @@ class TransactionService {
     try {
       const date = new Date(targetDateStr);
       date.setHours(0, 0, 0, 0);
+      const dateStr = date.toISOString().split('T')[0];
 
       console.log(`🔄 [SNAPSHOT RECOMPUTE] Supervisor: ${supervisorId}, Date: ${targetDateStr}`);
 
       const resetConfig = this.getResetConfig();
-
-      const startOfDay = new Date(date);
+      const startOfDay  = new Date(date);
       startOfDay.setHours(resetConfig.hour, resetConfig.minute, 0, 0);
-
       const nextDay = new Date(startOfDay);
       nextDay.setDate(nextDay.getDate() + 1);
       const endOfDay = new Date(nextDay.getTime() - 1000);
+
+      const accessMap = await readEntryAccess();
+
+      const accounts = await prisma.account.findMany({
+        where: { userId: supervisorId },
+        select: { type: true, balance: true, initialBalance: true, previousInitialBalance: true, finSecondaire: true }
+      });
+
+      const snapshotData = this.emptySnapshotData(supervisorId, date);
+      const typeToSnapshotField = this.getTypeToSnapshotField();
+      const extraTypes = {};
+
+      accounts.forEach(account => {
+        const access = accessMap[account.type] || 'both';
+
+        let debut, fin;
+        if (access === 'fin_only') {
+          debut = BigInt(0);
+          fin   = account.previousInitialBalance || BigInt(0);
+        } else {
+          debut = account.previousInitialBalance || BigInt(0);
+          fin   = account.initialBalance         || BigInt(0);
+        }
+
+        const fields = typeToSnapshotField[account.type];
+        if (fields) {
+          const [debutField, finField] = fields;
+          snapshotData[debutField] += debut;
+          snapshotData[finField]   += fin;
+        } else {
+          extraTypes[account.type] = {
+            debut: debut.toString(),
+            fin:   fin.toString(),
+            finSecondaire: (account.finSecondaire || BigInt(0)).toString()
+          };
+        }
+
+        snapshotData.debutTotal  += debut;
+        snapshotData.sortieTotal += fin;
+      });
 
       const transactions = await prisma.transaction.findMany({
         where: {
@@ -310,72 +379,14 @@ class TransactionService {
           createdAt: { gte: startOfDay, lte: endOfDay },
           NOT: { description: { startsWith: '[SUPPRIMÉ]' } }
         },
-        select: {
-          type: true, montant: true,
-          partenaireId: true, partenaireNom: true,
-          partenaire: { select: { nomComplet: true } }
-        }
+        select: { type: true, montant: true }
       });
 
-      const accounts = await prisma.account.findMany({
-        where: { userId: supervisorId },
-        select: { type: true, balance: true, initialBalance: true, previousInitialBalance: true }
-      });
-
-      const snapshotData = {
-        date,
-        userId: supervisorId,
-        liquideDebut:     BigInt(0),
-        orangeMoneyDebut: BigInt(0),
-        waveDebut:        BigInt(0),
-        uvMasterDebut:    BigInt(0),
-        autresDebut:      BigInt(0),
-        liquideFin:       BigInt(0),
-        orangeMoneyFin:   BigInt(0),
-        waveFin:          BigInt(0),
-        uvMasterFin:      BigInt(0),
-        autresFin:        BigInt(0),
-        debutTotal:       BigInt(0),
-        sortieTotal:      BigInt(0),
-        grTotal:          BigInt(0)
-      };
-
-      const typeToSnapshotField = {
-        'LIQUIDE':       ['liquideDebut',      'liquideFin'],
-        'ORANGE_MONEY':  ['orangeMoneyDebut',  'orangeMoneyFin'],
-        'WAVE':          ['waveDebut',          'waveFin'],
-        'UV_MASTER':     ['uvMasterDebut',      'uvMasterFin'],
-        'AUTRES':        ['autresDebut',        'autresFin'],
-        'FREE_MONEY':    ['autresDebut',        'autresFin'],
-        'WESTERN_UNION': ['autresDebut',        'autresFin'],
-        'RIA':           ['autresDebut',        'autresFin'],
-        'MONEYGRAM':     ['autresDebut',        'autresFin'],
-      };
-
-      accounts.forEach(account => {
-        const debut = account.previousInitialBalance || BigInt(0);
-        const fin   = account.initialBalance || BigInt(0);
-
-        const fields = typeToSnapshotField[account.type];
-        if (fields) {
-          const [debutField, finField] = fields;
-          snapshotData[debutField] += debut;
-          snapshotData[finField]   += fin;
-        }
-
-        snapshotData.debutTotal  += debut;
-        snapshotData.sortieTotal += fin;
-      });
-
-      let partnerDebutTotal = BigInt(0);
+      let partnerDebutTotal  = BigInt(0);
       let partnerSortieTotal = BigInt(0);
-
       transactions.forEach(tx => {
-        if (tx.type === 'DEPOT' || tx.type === 'RETRAIT') {
-          const montant = BigInt(tx.montant);
-          if (tx.type === 'DEPOT')   partnerDebutTotal  += montant;
-          if (tx.type === 'RETRAIT') partnerSortieTotal += montant;
-        }
+        if (tx.type === 'DEPOT')   partnerDebutTotal  += BigInt(tx.montant);
+        if (tx.type === 'RETRAIT') partnerSortieTotal += BigInt(tx.montant);
       });
 
       snapshotData.debutTotal  += partnerDebutTotal;
@@ -383,10 +394,20 @@ class TransactionService {
       snapshotData.grTotal = snapshotData.sortieTotal - snapshotData.debutTotal;
 
       const snapshot = await prisma.dailySnapshot.upsert({
-        where: { userId_date: { userId: supervisorId, date } },
+        where:  { userId_date: { userId: supervisorId, date } },
         update: snapshotData,
         create: snapshotData
       });
+
+      if (Object.keys(extraTypes).length > 0) {
+        const extraKey = `snapshot_extra_${supervisorId}_${dateStr}`;
+        await prisma.systemConfig.upsert({
+          where:  { key: extraKey },
+          update: { value: JSON.stringify(extraTypes) },
+          create: { key: extraKey, value: JSON.stringify(extraTypes) }
+        });
+        console.log(`📸 [SNAPSHOT RECOMPUTE] Slots custom sauvegardés:`, extraTypes);
+      }
 
       console.log(`✅ [SNAPSHOT RECOMPUTE] Snapshot mis à jour pour ${supervisorId} le ${targetDateStr}`);
       return snapshot;
@@ -427,34 +448,134 @@ class TransactionService {
     try {
       const date = new Date(targetDate);
       date.setHours(0, 0, 0, 0);
+      const dateStr = date.toISOString().split('T')[0];
 
       const snapshot = await prisma.dailySnapshot.findUnique({
         where: { userId_date: { userId, date } }
       });
 
       if (!snapshot) {
-        console.log(`⚠️ [SNAPSHOT] Aucun snapshot trouvé pour ${userId} le ${date.toISOString().split('T')[0]}`);
+        console.log(`⚠️ [SNAPSHOT] Aucun snapshot trouvé pour ${userId} le ${dateStr}`);
         return null;
+      }
+
+      const entryAccessConfig = await prisma.systemConfig.findFirst({
+        where: { key: 'account_entry_access' }
+      });
+      const DEFAULT_ENTRY_ACCESS = {
+        LIQUIDE: 'both', ORANGE_MONEY: 'both', WAVE: 'both', UV_MASTER: 'both',
+        FREE_MONEY: 'both', WESTERN_UNION: 'fin_only', RIA: 'fin_only', MONEYGRAM: 'fin_only',
+      };
+      const accessMap = entryAccessConfig
+        ? { ...DEFAULT_ENTRY_ACCESS, ...JSON.parse(entryAccessConfig.value) }
+        : { ...DEFAULT_ENTRY_ACCESS };
+
+      const debut  = {
+        LIQUIDE:       this.convertFromInt(snapshot.liquideDebut),
+        ORANGE_MONEY:  this.convertFromInt(snapshot.orangeMoneyDebut),
+        WAVE:          this.convertFromInt(snapshot.waveDebut),
+        UV_MASTER:     this.convertFromInt(snapshot.uvMasterDebut),
+        FREE_MONEY:    this.convertFromInt(snapshot.freeMoneyDebut),
+        WESTERN_UNION: this.convertFromInt(snapshot.westernUnionDebut),
+        RIA:           this.convertFromInt(snapshot.riaDebut),
+        MONEYGRAM:     this.convertFromInt(snapshot.moneygramDebut),
+      };
+      const sortie = {
+        LIQUIDE:       this.convertFromInt(snapshot.liquideFin),
+        ORANGE_MONEY:  this.convertFromInt(snapshot.orangeMoneyFin),
+        WAVE:          this.convertFromInt(snapshot.waveFin),
+        UV_MASTER:     this.convertFromInt(snapshot.uvMasterFin),
+        FREE_MONEY:    this.convertFromInt(snapshot.freeMoneyFin),
+        WESTERN_UNION: this.convertFromInt(snapshot.westernUnionFin),
+        RIA:           this.convertFromInt(snapshot.riaFin),
+        MONEYGRAM:     this.convertFromInt(snapshot.moneygramFin),
+      };
+
+      // F2 depuis les comptes actuels (pour les types fixes)
+      const sortieF2  = {};
+      const diffF2F1  = {};
+
+      const autresDebut  = this.convertFromInt(snapshot.autresDebut);
+      const autresSortie = this.convertFromInt(snapshot.autresFin);
+      if (autresDebut  > 0) debut['AUTRES']  = autresDebut;
+      if (autresSortie > 0) sortie['AUTRES'] = autresSortie;
+
+      // Fallback previousInitialBalance pour anciens snapshots
+      const fixedExtraTypes = ['FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM'];
+      for (const type of fixedExtraTypes) {
+        const access    = accessMap[type] || 'both';
+        const debutVal  = debut[type]  || 0;
+        const sortieVal = sortie[type] || 0;
+
+        if (debutVal === 0 && sortieVal === 0) {
+          const account = await prisma.account.findUnique({
+            where: { userId_type: { userId, type } },
+            select: { previousInitialBalance: true, finSecondaire: true }
+          });
+          if (account?.previousInitialBalance) {
+            const valeur = this.convertFromInt(account.previousInitialBalance);
+            if (valeur > 0) {
+              if (access === 'fin_only') sortie[type] = valeur;
+              else debut[type] = valeur;
+            }
+          }
+          // Récupérer F2 si disponible
+          if (account?.finSecondaire) {
+            const f2Val = this.convertFromInt(account.finSecondaire);
+            if (f2Val > 0) {
+              sortieF2[type] = f2Val;
+              diffF2F1[type] = f2Val - (sortie[type] || 0);
+            }
+          }
+        }
+      }
+
+      // Récupérer F2 pour les types principaux (LIQUIDE, ORANGE_MONEY, WAVE, UV_MASTER)
+      const mainTypes = ['LIQUIDE', 'ORANGE_MONEY', 'WAVE', 'UV_MASTER'];
+      for (const type of mainTypes) {
+        const account = await prisma.account.findUnique({
+          where: { userId_type: { userId, type } },
+          select: { finSecondaire: true }
+        });
+        if (account?.finSecondaire) {
+          const f2Val = this.convertFromInt(account.finSecondaire);
+          if (f2Val > 0) {
+            sortieF2[type] = f2Val;
+            diffF2F1[type] = f2Val - (sortie[type] || 0);
+          }
+        }
+      }
+
+      // snapshot_extra pour slots AUTRES_* custom
+      const extraKey = `snapshot_extra_${userId}_${dateStr}`;
+      const extraConfig = await prisma.systemConfig.findFirst({ where: { key: extraKey } });
+
+      if (extraConfig?.value) {
+        try {
+          const extraTypes = JSON.parse(extraConfig.value);
+          for (const [type, values] of Object.entries(extraTypes)) {
+            if ([...fixedExtraTypes, 'LIQUIDE', 'ORANGE_MONEY', 'WAVE', 'UV_MASTER', 'AUTRES'].includes(type)) continue;
+
+            const d  = this.convertFromInt(BigInt(values.debut));
+            const f  = this.convertFromInt(BigInt(values.fin));
+            const f2 = values.finSecondaire ? this.convertFromInt(BigInt(values.finSecondaire)) : 0;
+
+            if (d  > 0) debut[type]   = d;
+            if (f  > 0) sortie[type]  = f;
+            if (f2 > 0) {
+              sortieF2[type] = f2;
+              diffF2F1[type] = f2 - f;
+            }
+          }
+          console.log(`📸 [SNAPSHOT EXTRA] Slots custom restaurés pour ${userId} le ${dateStr}`);
+        } catch (e) {
+          console.error('⚠️ [SNAPSHOT EXTRA] Erreur parsing:', e);
+        }
       }
 
       return {
         date: snapshot.date,
-        comptes: {
-          debut: {
-            LIQUIDE:       this.convertFromInt(snapshot.liquideDebut),
-            ORANGE_MONEY:  this.convertFromInt(snapshot.orangeMoneyDebut),
-            WAVE:          this.convertFromInt(snapshot.waveDebut),
-            UV_MASTER:     this.convertFromInt(snapshot.uvMasterDebut),
-            AUTRES:        this.convertFromInt(snapshot.autresDebut)
-          },
-          sortie: {
-            LIQUIDE:       this.convertFromInt(snapshot.liquideFin),
-            ORANGE_MONEY:  this.convertFromInt(snapshot.orangeMoneyFin),
-            WAVE:          this.convertFromInt(snapshot.waveFin),
-            UV_MASTER:     this.convertFromInt(snapshot.uvMasterFin),
-            AUTRES:        this.convertFromInt(snapshot.autresFin)
-          }
-        },
+        comptes: { debut, sortie, sortieF2, diffF2F1 },
         totaux: {
           debutTotal:  this.convertFromInt(snapshot.debutTotal),
           sortieTotal: this.convertFromInt(snapshot.sortieTotal),
@@ -664,7 +785,8 @@ class TransactionService {
     try {
       const {
         superviseurId, typeCompte, typeOperation, montant,
-        partenaireId, partenaireNom, telephoneLibre, callerRole
+        partenaireId, partenaireNom, telephoneLibre, callerRole,
+        finSecondaire  // ← F2 optionnel
       } = transactionData;
 
       const montantFloat = parseFloat(montant);
@@ -773,23 +895,35 @@ class TransactionService {
         let account = await prisma.account.upsert({
           where: { userId_type: { userId: superviseurId, type: typeCompte.toUpperCase() } },
           update: {},
-          create: { type: typeCompte.toUpperCase(), userId: superviseurId, balance: 0, initialBalance: 0 },
-          select: { id: true, balance: true, initialBalance: true }
+          create: { type: typeCompte.toUpperCase(), userId: superviseurId, balance: 0, initialBalance: 0, finSecondaire: 0 },
+          select: { id: true, balance: true, initialBalance: true, finSecondaire: true }
         });
 
         let transactionType, description, balanceUpdate;
         if (typeOperation === 'depot') {
-          transactionType = 'DEBUT_JOURNEE'; description = `Début journée ${typeCompte}`;
+          transactionType = 'DEBUT_JOURNEE';
+          description = `Début journée ${typeCompte}`;
           balanceUpdate = { initialBalance: { increment: montantInt } };
         } else {
-          transactionType = 'FIN_JOURNEE'; description = `Fin journée ${typeCompte}`;
+          transactionType = 'FIN_JOURNEE';
+          description = `Fin journée ${typeCompte}`;
           balanceUpdate = { balance: montantInt };
+
+          // ← F2 optionnel : stocker si fourni, sinon remettre à 0
+          if (finSecondaire != null) {
+            const f2Float = parseFloat(finSecondaire);
+            balanceUpdate.finSecondaire = isNaN(f2Float) || f2Float <= 0
+              ? 0
+              : this.convertToInt(f2Float);
+          } else {
+            balanceUpdate.finSecondaire = 0;
+          }
         }
 
         const result = await prisma.$transaction(async (tx) => {
           const updatedAccount = await tx.account.update({
             where: { id: account.id }, data: balanceUpdate,
-            select: { balance: true, initialBalance: true }
+            select: { balance: true, initialBalance: true, finSecondaire: true }
           });
           const transaction = await tx.transaction.create({
             data: { montant: montantInt, type: transactionType, description, envoyeurId: adminId, destinataireId: superviseurId, compteDestinationId: account.id },
@@ -806,6 +940,9 @@ class TransactionService {
           } catch (notifError) { console.error('Erreur notification (non-bloquante):', notifError); }
         });
 
+        const f2Stored = this.convertFromInt(result.updatedAccount.finSecondaire || 0);
+        const f1Stored = this.convertFromInt(result.updatedAccount.balance || 0);
+
         return {
           transaction: {
             id: result.transaction.id, type: result.transaction.type, montant: montantFloat,
@@ -815,8 +952,11 @@ class TransactionService {
             partenaireNom: null, isRegisteredPartner: false, transactionCategory: 'JOURNEE'
           },
           accountUpdated: true,
-          soldeActuel: this.convertFromInt(result.updatedAccount.balance),
-          soldeInitial: this.convertFromInt(result.updatedAccount.initialBalance)
+          soldeActuel:    f1Stored,
+          soldeInitial:   this.convertFromInt(result.updatedAccount.initialBalance),
+          // ← F2 retourné pour confirmation
+          finSecondaire:  f2Stored > 0 ? f2Stored : null,
+          diffF2F1:       f2Stored > 0 ? f2Stored - f1Stored : null
         };
       }
 
@@ -997,71 +1137,66 @@ class TransactionService {
     return result.count;
   }
 
-  // =====================================
-  // RESET DES SOLDES — RÈGLE SIMPLIFIÉE
-  // LIQUIDE  : fin → début, fin = 0
-  // AUTRES   : début = 0, fin = 0
-  // =====================================
   async transferBalancesToInitial() {
     try {
       console.log('🔄 [TRANSFER] Début du transfert des soldes...');
 
-      // ── LIQUIDE : la fin devient le nouveau début, fin remise à 0 ──────────
-      await prisma.$executeRaw`
-        UPDATE "accounts"
-        SET "previousInitialBalance" = "initialBalance",
-            "initialBalance"         = balance,
-            balance                  = 0
-        WHERE type::text = 'LIQUIDE'
-          AND "userId" IN (
-            SELECT id FROM "users"
-            WHERE role::text = 'SUPERVISEUR' AND status::text = 'ACTIVE'
-          )
-      `;
-      console.log('✅ [TRANSFER] LIQUIDE : fin → début, fin = 0');
+      const accessMap = await readEntryAccess();
 
-      // ── Tous les autres types fixes : début = 0, fin = 0 ──────────────────
-      const otherTypes = [
-        'ORANGE_MONEY', 'WAVE', 'UV_MASTER',
-        'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM'
-      ];
-
-      for (const type of otherTypes) {
-        await prisma.$executeRaw`
-          UPDATE "accounts"
-          SET "previousInitialBalance" = "initialBalance",
-              "initialBalance"         = 0,
-              balance                  = 0
-          WHERE type::text = ${type}
-            AND "userId" IN (
-              SELECT id FROM "users"
-              WHERE role::text = 'SUPERVISEUR' AND status::text = 'ACTIVE'
-            )
-        `;
-      }
-      console.log('✅ [TRANSFER] Autres types fixes : début = 0, fin = 0');
-
-      // ── Slots custom (AUTRES_*) : stockés en TEXT, pas d'enum ─────────────
-      const customSlotConfig = await prisma.systemConfig.findFirst({
-        where: { key: 'custom_account_slots' }
+      const existingAccounts = await prisma.account.findMany({
+        where: { user: { role: 'SUPERVISEUR', status: 'ACTIVE' } },
+        select: { type: true },
+        distinct: ['type']
       });
 
-      if (customSlotConfig?.value) {
-        const slots = JSON.parse(customSlotConfig.value);
-        for (const slot of slots) {
+      for (const { type } of existingAccounts) {
+        const access = accessMap[type] || 'both';
+
+        if (type === 'LIQUIDE') {
           await prisma.$executeRaw`
             UPDATE "accounts"
             SET "previousInitialBalance" = "initialBalance",
-                "initialBalance"         = 0,
-                balance                  = 0
-            WHERE type::text = ${slot.id}
+                "initialBalance"         = balance,
+                balance                  = 0,
+                "finSecondaire"          = 0
+            WHERE type::text = 'LIQUIDE'
               AND "userId" IN (
                 SELECT id FROM "users"
                 WHERE role::text = 'SUPERVISEUR' AND status::text = 'ACTIVE'
               )
           `;
+          console.log('✅ [TRANSFER] LIQUIDE : fin → début, fin = 0, F2 = 0');
+
+        } else if (access === 'fin_only') {
+          await prisma.$executeRaw`
+            UPDATE "accounts"
+            SET "previousInitialBalance" = balance,
+                "initialBalance"         = 0,
+                balance                  = 0,
+                "finSecondaire"          = 0
+            WHERE type::text = ${type}
+              AND "userId" IN (
+                SELECT id FROM "users"
+                WHERE role::text = 'SUPERVISEUR' AND status::text = 'ACTIVE'
+              )
+          `;
+          console.log(`✅ [TRANSFER] ${type} (fin_only) : balance → previousInitialBalance, F2 = 0`);
+
+        } else {
+          await prisma.$executeRaw`
+            UPDATE "accounts"
+            SET "previousInitialBalance" = "initialBalance",
+                "initialBalance"         = 0,
+                balance                  = 0,
+                "finSecondaire"          = 0
+            WHERE type::text = ${type}
+              AND "userId" IN (
+                SELECT id FROM "users"
+                WHERE role::text = 'SUPERVISEUR' AND status::text = 'ACTIVE'
+              )
+          `;
+          console.log(`✅ [TRANSFER] ${type} (${access}) : initialBalance → previousInitialBalance, F2 = 0`);
         }
-        console.log(`✅ [TRANSFER] ${slots.length} slot(s) custom : début = 0, fin = 0`);
       }
 
       console.log('✅ [TRANSFER] Transfert terminé');
@@ -1202,7 +1337,8 @@ class TransactionService {
         select: {
           id: true, nomComplet: true, status: true,
           accounts: {
-            select: { type: true, balance: true, initialBalance: true, previousInitialBalance: true }
+            // ← finSecondaire ajouté
+            select: { type: true, balance: true, initialBalance: true, previousInitialBalance: true, finSecondaire: true }
           },
           transactionsRecues: {
             where: { ...transactionFilter, ...excludeDeleted },
@@ -1221,22 +1357,16 @@ class TransactionService {
       let featuredSolde = 0, featuredSorties = 0;
 
       const supervisorCards = await Promise.all(supervisors.map(async (supervisor) => {
-        const accountsByType = { debut: {}, sortie: {} };
+        // ← sortieF2 et diffF2F1 ajoutés
+        const accountsByType = { debut: {}, sortie: {}, sortieF2: {}, diffF2F1: {} };
 
         if (snapshotDate) {
           const snapshot = await this.getSnapshotForDate(supervisor.id, snapshotDate);
           if (snapshot) {
-            Object.assign(accountsByType.debut, snapshot.comptes.debut);
-            Object.assign(accountsByType.sortie, snapshot.comptes.sortie);
-
-            supervisor.accounts.forEach(account => {
-              if (account.type.startsWith('AUTRES_')) {
-                const ancienDebut  = this.convertFromInt(account.previousInitialBalance || 0);
-                const ancienSortie = this.convertFromInt(account.initialBalance || 0);
-                accountsByType.debut[account.type]  = ancienDebut;
-                accountsByType.sortie[account.type] = ancienSortie;
-              }
-            });
+            Object.assign(accountsByType.debut,    snapshot.comptes.debut);
+            Object.assign(accountsByType.sortie,   snapshot.comptes.sortie);
+            Object.assign(accountsByType.sortieF2, snapshot.comptes.sortieF2 || {});
+            Object.assign(accountsByType.diffF2F1, snapshot.comptes.diffF2F1 || {});
 
             const snapshotDebut  = snapshot.comptes.debut[featuredType]  ?? 0;
             const snapshotSortie = snapshot.comptes.sortie[featuredType] ?? 0;
@@ -1259,8 +1389,17 @@ class TransactionService {
           supervisor.accounts.forEach(account => {
             const initial = this.convertFromInt(account.initialBalance || 0);
             const current = this.convertFromInt(account.balance || 0);
+            const f2      = this.convertFromInt(account.finSecondaire || 0);
+
             accountsByType.debut[account.type]  = initial;
-            accountsByType.sortie[account.type] = current;
+            accountsByType.sortie[account.type] = current; // F1 — inchangé pour totaux
+
+            // F2 uniquement si saisi
+            if (f2 > 0) {
+              accountsByType.sortieF2[account.type]  = f2;
+              accountsByType.diffF2F1[account.type]  = f2 - current; // F2 - F1
+            }
+
             if (account.type === featuredType) {
               featuredSolde   += initial;
               featuredSorties += current;
@@ -1316,7 +1455,7 @@ class TransactionService {
 
         return {
           id: supervisor.id, nom: supervisor.nomComplet, status: supervisor.status,
-          comptes: accountsByType,
+          comptes: accountsByType, // ← inclut sortieF2 et diffF2F1
           totaux: {
             debutTotal, sortieTotal, grTotal,
             formatted: {
@@ -1424,7 +1563,8 @@ class TransactionService {
           where: { id: superviseurId },
           select: {
             id: true, nomComplet: true, status: true,
-            accounts: { select: { type: true, balance: true, initialBalance: true, previousInitialBalance: true } }
+            // ← finSecondaire ajouté
+            accounts: { select: { type: true, balance: true, initialBalance: true, previousInitialBalance: true, finSecondaire: true } }
           }
         }),
         prisma.transaction.findMany({
@@ -1442,7 +1582,7 @@ class TransactionService {
         }),
         prisma.account.findMany({
           where: { type: featuredType, user: { role: 'SUPERVISEUR', status: 'ACTIVE' } },
-          select: { balance: true, initialBalance: true, previousInitialBalance: true }
+          select: { balance: true, initialBalance: true, previousInitialBalance: true, finSecondaire: true }
         })
       ]);
 
@@ -1454,31 +1594,49 @@ class TransactionService {
           period, customDate,
           featured: { type: featuredType, label: featuredLabel, personal: { debut: 0, sortie: 0, formatted: '0 F' }, total: 0, formatted: '0 F' },
           uvMaster: { personal: { debut: 0, sortie: 0, formatted: '0 F' }, total: 0, formatted: '0 F' },
-          comptes: { debut: {}, sortie: {} },
+          comptes: { debut: {}, sortie: {}, sortieF2: {}, diffF2F1: {} },
           totaux: { debutTotal: 0, sortieTotal: 0, grTotal: 0, formatted: { debutTotal: '0 F', sortieTotal: '0 F', grTotal: '0 F' } },
           recentTransactions: [],
           dynamicConfig: { period, customDate, resetConfig: this.getResetConfig(), includeArchived, totalTransactionsFound: 0 }
         };
       }
 
-      const accountsByType = { debut: {}, sortie: {} };
+      // ← sortieF2 et diffF2F1 ajoutés
+      const accountsByType = { debut: {}, sortie: {}, sortieF2: {}, diffF2F1: {} };
       let totalDebutPersonnel = 0, totalSortiePersonnel = 0;
 
       if (includeArchived && period === 'yesterday') {
+        const accessMap = await readEntryAccess();
         supervisor.accounts.forEach(account => {
-          const ancienDebut  = this.convertFromInt(account.previousInitialBalance || 0);
-          const ancienSortie = this.convertFromInt(account.initialBalance || 0);
+          const access = accessMap[account.type] || 'both';
+          let ancienDebut, ancienSortie;
+          if (access === 'fin_only') {
+            ancienDebut  = 0;
+            ancienSortie = this.convertFromInt(account.previousInitialBalance || 0);
+          } else {
+            ancienDebut  = this.convertFromInt(account.previousInitialBalance || 0);
+            ancienSortie = this.convertFromInt(account.initialBalance || 0);
+          }
           accountsByType.debut[account.type]  = ancienDebut;
           accountsByType.sortie[account.type] = ancienSortie;
           totalDebutPersonnel  += ancienDebut;
           totalSortiePersonnel += ancienSortie;
+          // F2 pas disponible pour hier (remis à 0 au reset)
         });
       } else {
         supervisor.accounts.forEach(account => {
           const initial = this.convertFromInt(account.initialBalance || 0);
           const current = this.convertFromInt(account.balance || 0);
+          const f2      = this.convertFromInt(account.finSecondaire || 0);
+
           accountsByType.debut[account.type]  = initial;
           accountsByType.sortie[account.type] = current;
+
+          if (f2 > 0) {
+            accountsByType.sortieF2[account.type]  = f2;
+            accountsByType.diffF2F1[account.type]  = f2 - current;
+          }
+
           totalDebutPersonnel  += initial;
           totalSortiePersonnel += current;
         });
@@ -1547,7 +1705,7 @@ class TransactionService {
           total:    featuredSortie,
           formatted: featuredFormatted
         },
-        comptes: accountsByType,
+        comptes: accountsByType, // ← inclut sortieF2 et diffF2F1
         totaux: {
           debutTotal: totalDebutPersonnel, sortieTotal: totalSortiePersonnel, grTotal,
           formatted: {
@@ -1735,7 +1893,7 @@ class TransactionService {
         const account = await prisma.account.upsert({
           where: { userId_type: { userId: supervisorId, type: accountKey } },
           update: accountType === 'debut' ? { initialBalance: newValueInt } : { balance: newValueInt },
-          create: { type: accountKey, userId: supervisorId, balance: accountType === 'sortie' ? newValueInt : 0, initialBalance: accountType === 'debut' ? newValueInt : 0 },
+          create: { type: accountKey, userId: supervisorId, balance: accountType === 'sortie' ? newValueInt : 0, initialBalance: accountType === 'debut' ? newValueInt : 0, finSecondaire: 0 },
           select: { id: true, balance: true, initialBalance: true }
         });
         const oldValue = accountType === 'debut' ? this.convertFromInt(account.initialBalance) : this.convertFromInt(account.balance);
@@ -1911,14 +2069,20 @@ class TransactionService {
       const [resetStatus, cronStatus, recentTransactions, accountStates] = await Promise.all([
         this.getResetStatus(), this.checkCronStatus(),
         prisma.transaction.findMany({ where: { type: { in: ['DEPOT', 'RETRAIT'] }, partenaireId: { not: null } }, select: { id: true, type: true, createdAt: true, archived: true, archivedAt: true, partenaire: { select: { nomComplet: true } } }, orderBy: { createdAt: 'desc' }, take: 20 }),
-        prisma.account.findMany({ where: { user: { role: 'SUPERVISEUR', status: 'ACTIVE' } }, select: { type: true, balance: true, initialBalance: true, previousInitialBalance: true, user: { select: { nomComplet: true } } } })
+        prisma.account.findMany({ where: { user: { role: 'SUPERVISEUR', status: 'ACTIVE' } }, select: { type: true, balance: true, initialBalance: true, previousInitialBalance: true, finSecondaire: true, user: { select: { nomComplet: true } } } })
       ]);
 
       return {
         currentTime: now.toISOString(), resetConfig, isAfterTodayReset: now > todayResetTime,
         resetStatus, cronStatus,
         recentTransactions: recentTransactions.map(tx => ({ type: tx.type, partner: tx.partenaire?.nomComplet, createdAt: tx.createdAt.toISOString(), archived: tx.archived, archivedAt: tx.archivedAt?.toISOString() })),
-        accountStates: accountStates.map(acc => ({ user: acc.user.nomComplet, type: acc.type, balance: this.convertFromInt(acc.balance || 0), initialBalance: this.convertFromInt(acc.initialBalance || 0), previousInitialBalance: acc.previousInitialBalance ? this.convertFromInt(acc.previousInitialBalance) : null }))
+        accountStates: accountStates.map(acc => ({
+          user: acc.user.nomComplet, type: acc.type,
+          balance:               this.convertFromInt(acc.balance || 0),
+          initialBalance:        this.convertFromInt(acc.initialBalance || 0),
+          previousInitialBalance: acc.previousInitialBalance ? this.convertFromInt(acc.previousInitialBalance) : null,
+          finSecondaire:         acc.finSecondaire ? this.convertFromInt(acc.finSecondaire) : null
+        }))
       };
     } catch (error) { return { error: error.message }; }
   }

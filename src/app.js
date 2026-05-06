@@ -24,6 +24,7 @@ const allowedOrigins = [
   'http://localhost:8082',
   'http://localhost:8081',
   'http://172.20.10.2:8082',
+  'https://sparkling-glade-3839.pages.dev'
 ];
 
 const corsOptions = {

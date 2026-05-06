@@ -72,6 +72,7 @@ model Account {
   previousInitialBalance  BigInt        @default(0)
   userId                  String
   createdAt               DateTime      @default(now())
+  finSecondaire  BigInt  @default(0)  // ← F2
   updatedAt               DateTime      @updatedAt
   user                    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   transactionsDestination Transaction[] @relation("TransactionCompteDestination")
@@ -148,6 +149,18 @@ model DailySnapshot {
   waveFin          BigInt   @default(0)
   uvMasterFin      BigInt   @default(0)
   autresFin        BigInt   @default(0)
+
+  // ── Nouvelles colonnes ──────────────────────────────
+  freeMoneyDebut      BigInt   @default(0)
+  freeMoneyFin        BigInt   @default(0)
+  westernUnionDebut   BigInt   @default(0)
+  westernUnionFin     BigInt   @default(0)
+  riaDebut            BigInt   @default(0)
+  riaFin              BigInt   @default(0)
+  moneygramDebut      BigInt   @default(0)
+  moneygramFin        BigInt   @default(0)
+  // ───────────────────────────────────────────────────
+
   debutTotal       BigInt   @default(0)
   sortieTotal      BigInt   @default(0)
   grTotal          BigInt   @default(0)
@@ -231,4 +244,7 @@ enum NotificationType {
   FIN_JOURNEE
   AUDIT_MODIFICATION
   AUDIT_SUPPRESSION
+  RESET_SUPERVISOR    // ← ajouter
+  RESET_ADMIN         // ← ajouter
+  RESET_PARTNER       // ← ajouter
 }

@@ -1,0 +1,9 @@
+-- AlterTable
+ALTER TABLE "public"."daily_snapshots" ADD COLUMN     "freeMoneyDebut" BIGINT NOT NULL DEFAULT 0,
+ADD COLUMN     "freeMoneyFin" BIGINT NOT NULL DEFAULT 0,
+ADD COLUMN     "moneygramDebut" BIGINT NOT NULL DEFAULT 0,
+ADD COLUMN     "moneygramFin" BIGINT NOT NULL DEFAULT 0,
+ADD COLUMN     "riaDebut" BIGINT NOT NULL DEFAULT 0,
+ADD COLUMN     "riaFin" BIGINT NOT NULL DEFAULT 0,
+ADD COLUMN     "westernUnionDebut" BIGINT NOT NULL DEFAULT 0,
+ADD COLUMN     "westernUnionFin" BIGINT NOT NULL DEFAULT 0;
