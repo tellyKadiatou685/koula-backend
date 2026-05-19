@@ -3,7 +3,7 @@ import prisma from '../config/database.js';
 
 const FIXED_ACCOUNT_TYPES = [
   'LIQUIDE', 'ORANGE_MONEY', 'WAVE', 'UV_MASTER',
-  'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM'
+  'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM','SEDDO', 'VERSEMENT_BANK'
 ];
 
 const FIXED_ACCOUNT_TYPE_LABELS = {
@@ -15,6 +15,8 @@ const FIXED_ACCOUNT_TYPE_LABELS = {
   WESTERN_UNION: 'Western Union',
   RIA:           'Ria',
   MONEYGRAM:     'MoneyGram',
+  SEDDO:         'Seddo',
+  VERSEMENT_BANK: 'Versement Bank',
 };
 
 const DEFAULT_ACTIVE_TYPES = ['LIQUIDE', 'ORANGE_MONEY', 'WAVE', 'UV_MASTER'];
@@ -28,6 +30,8 @@ const DEFAULT_ENTRY_ACCESS = {
   WESTERN_UNION: 'fin_only',
   RIA:           'fin_only',
   MONEYGRAM:     'fin_only',
+  SEDDO:         'debut_only',
+  VERSEMENT_BANK: 'debut_only',
 };
 
 const ENTRY_ACCESS_KEY     = 'account_entry_access';
@@ -170,6 +174,119 @@ class AccountTypeService {
         featuredType:  DEFAULT_FEATURED_TYPE,
       };
     }
+  }
+
+  // ─── MÉTHODES PUBLIQUES PRINCIPALES ────────────────────────────────────────
+  
+  async getConfig() {
+    return await this.getAccountTypesConfig();
+  }
+
+  async getActiveOptions() {
+    const config = await this.getAccountTypesConfig();
+    return config.activeOptions;
+  }
+
+  async isValidType(typeValue) {
+    try {
+      const config = await this.getAccountTypesConfig();
+      
+      console.log('🔍 [isValidType] Vérification pour:', typeValue);
+      console.log('🔍 [isValidType] activeOptions:', config.activeOptions.map(o => o.value));
+      
+      // Vérifier dans activeOptions
+      const isValid = config.activeOptions.some(opt => opt.value === typeValue);
+      
+      if (isValid) {
+        console.log('✅ [isValidType] Type trouvé dans activeOptions');
+        return true;
+      }
+      
+      // Vérifier aussi dans customSlots
+      if (config.customSlots && config.customSlots.length > 0) {
+        const isValidCustom = config.customSlots.some(slot => slot.id === typeValue);
+        if (isValidCustom) {
+          console.log('✅ [isValidType] Type trouvé dans customSlots');
+          return true;
+        }
+      }
+      
+      console.log('❌ [isValidType] Type non trouvé:', typeValue);
+      return false;
+      
+    } catch (error) {
+      console.error('❌ [isValidType] Erreur:', error);
+      // Fallback : accepter AUTRES_* et les types de base
+      if (typeValue && typeValue.startsWith('AUTRES_')) {
+        console.log('✅ [isValidType] Fallback: type AUTRES_* accepté');
+        return true;
+      }
+      const basicTypes = ['LIQUIDE', 'ORANGE_MONEY', 'WAVE', 'UV_MASTER', 'AUTRES',
+                          'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM',
+                          'SEDDO', 'VERSEMENT_BANK'];
+      return basicTypes.includes(typeValue);
+    }
+  }
+
+  // ─── MAPPER LES TYPES PERSONNALISÉS (NOUVEAU) ───────────────────────────────
+  async mapToValidEnumType(customType) {
+    if (!customType) return 'AUTRES';
+    
+    const typeUpper = customType.toUpperCase();
+    
+    // 1. Si c'est déjà un type fixe, le retourner
+    const fixedTypes = ['LIQUIDE', 'ORANGE_MONEY', 'WAVE', 'UV_MASTER', 
+                        'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM',
+                        'SEDDO', 'VERSEMENT_BANK', 'AUTRES'];
+    
+    if (fixedTypes.includes(typeUpper)) {
+      return typeUpper;
+    }
+    
+    // 2. Pour les types personnalisés (AUTRES_1, AUTRES_2, etc.)
+    if (typeUpper.startsWith('AUTRES_')) {
+      console.log(`🔄 [MAP] Type personnalisé accepté: ${typeUpper}`);
+      return typeUpper;
+    }
+    
+    // 3. Fallback vers AUTRES
+    console.log(`⚠️ [MAP] Type inconnu ${typeUpper} → AUTRES (fallback)`);
+    return 'AUTRES';
+  }
+
+  // ─── VÉRIFIER SI UN TYPE EST PERSONNALISÉ (NOUVEAU) ─────────────────────────
+  isCustomType(typeValue) {
+    return typeValue && typeValue.startsWith('AUTRES_');
+  }
+
+  // ─── RÉCUPÉRER TOUS LES TYPES POUR L'AFFICHAGE (NOUVEAU) ────────────────────
+  async getAllDisplayTypes() {
+    const config = await this.getAccountTypesConfig();
+    
+    const fixedDisplay = FIXED_ACCOUNT_TYPES.map(type => ({
+      value: type,
+      label: FIXED_ACCOUNT_TYPE_LABELS[type],
+      isCustom: false,
+      entryAccess: config.entryAccess[type] || 'both',
+      isActive: config.activeTypes.includes(type)
+    }));
+    
+    const customDisplay = config.customSlots.map(slot => ({
+      value: slot.id,
+      label: slot.label,
+      isCustom: true,
+      entryAccess: config.entryAccess[slot.id] || 'both',
+      isActive: config.activeTypes.includes(slot.id)
+    }));
+    
+    const allDisplay = [...fixedDisplay, ...customDisplay];
+    const activeDisplay = allDisplay.filter(t => t.isActive);
+    
+    return {
+      allTypes: allDisplay,
+      activeTypes: activeDisplay,
+      featuredType: config.featuredType
+    };
   }
 
   // ─── TYPE VEDETTE ─────────────────────────────────────────────────────────

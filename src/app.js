@@ -10,6 +10,7 @@ import AccountLines from './routes/accountLines.js';
 import AccountTypes from './routes/accoutTypeRoutes.js';
 import cronHandler from '../api/cron.js';
 import partner from './routes/partnerBalanceRoutes.js';
+import cumulRoutes from './routes/cumulRoutes.js';
 
 const app = express();
 
@@ -24,7 +25,7 @@ const allowedOrigins = [
   'http://localhost:8082',
   'http://localhost:8081',
   'http://172.20.10.2:8082',
-  'https://sparkling-glade-3839.pages.dev'
+  'https://sparkling-glade-3839.pages.dev',
 ];
 
 const corsOptions = {
@@ -127,6 +128,7 @@ app.use('/api/recent',          RecentTransactionRoutes);
 app.use('/api/account-lines',   AccountLines);
 app.use('/api/accountype',      AccountTypes);
 app.use('/api/partner-balance', partner);
+app.use('/api/cumul', cumulRoutes);
 
 app.get('/api/test-auth', (req, res) => res.json({
   message: 'Route accessible',

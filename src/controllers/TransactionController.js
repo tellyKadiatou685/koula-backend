@@ -238,13 +238,11 @@ class TransactionController {
       const transactionPromise = (() => {
         switch (user.role) {
           case 'ADMIN':
-            // ← callerRole transmis pour que le service sache que c'est un admin
             return TransactionService.createAdminTransaction(user.id, {
               ...transactionData,
               callerRole: 'ADMIN',
             });
           case 'SUPERVISEUR':
-            // ← callerRole forcé à SUPERVISEUR pour appliquer les restrictions
             return TransactionService.createAdminTransaction(user.id, {
               ...transactionData,
               superviseurId: user.id,
@@ -263,7 +261,6 @@ class TransactionController {
 
     } catch (error) {
       console.error('❌ [OPTIMIZED] Erreur createTransaction:', error);
-      // Erreurs métier (restrictions d'accès) → 400, pas 500
       const is400 = [
         'non autorisée',
         'n\'est pas autorisée',
@@ -280,140 +277,166 @@ class TransactionController {
     }
   }
 
-  // 💰 TRANSACTION ADMIN - VERSION COMPLÈTE AVEC PARTENAIRE LIBRE + TÉLÉPHONE
-  async createAdminTransaction(req, res) {
-    try {
-      if (req.user.role !== 'ADMIN') {
-        return res.status(403).json({ success: false, message: 'Accès réservé aux administrateurs' });
-      }
+  // TransactionController.js - createAdminTransaction (version corrigée)
 
-      const adminId = req.user.id;
-      const { 
-        superviseurId, 
-        typeCompte, 
-        typeOperation, 
-        montant, 
-        partenaireId,
-        partenaireNom,
-        telephoneLibre
-      } = req.body;
+async createAdminTransaction(req, res) {
+  try {
+    if (req.user.role !== 'ADMIN') {
+      return res.status(403).json({ success: false, message: 'Accès réservé aux administrateurs' });
+    }
 
-      console.log('🔍 [CONTROLLER] Données reçues:', {
-        superviseurId, typeCompte, typeOperation, montant,
-        partenaireId, partenaireNom, telephoneLibre,
-        hasPartenaireNom: !!partenaireNom
-      });
+    const adminId = req.user.id;
+    const { 
+      superviseurId, 
+      typeCompte, 
+      typeOperation, 
+      montant, 
+      partenaireId,
+      partenaireNom,
+      telephoneLibre,
+      finSecondaire,
+    } = req.body;
 
-      const validationErrors = [];
-      
-      if (!superviseurId) validationErrors.push('superviseurId requis');
-      
-      const hasPartenaireId = !!partenaireId;
-      const hasPartenaireNom = !!partenaireNom;
-      const isPartnerTransaction = hasPartenaireId || hasPartenaireNom;
-      
-      if (!isPartnerTransaction && !typeCompte) {
-        validationErrors.push('typeCompte requis pour transactions début/fin journée');
-      }
-      
-      if (hasPartenaireId && hasPartenaireNom) {
-        validationErrors.push('Choisissez soit un partenaire enregistré, soit un nom libre (pas les deux)');
-      }
-      
-      if (!typeOperation) validationErrors.push('typeOperation requis');
-      if (!montant) validationErrors.push('montant requis');
-      
-      if (validationErrors.length > 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'Données manquantes: ' + validationErrors.join(', ')
-        });
-      }
+    console.log('🔍 [CONTROLLER] Données reçues:', {
+      superviseurId, typeCompte, typeOperation, montant,
+      partenaireId, partenaireNom, telephoneLibre,
+      finSecondaire,
+    });
 
-      const montantFloat = parseFloat(montant);
-      
-      if (isNaN(montantFloat) || montantFloat <= 0) {
-        return res.status(400).json({ success: false, message: 'Le montant doit être un nombre positif' });
-      }
-
-      if (!['depot', 'retrait'].includes(typeOperation)) {
-        return res.status(400).json({ success: false, message: 'typeOperation doit être "depot" ou "retrait"' });
-      }
-
-      if (!isPartnerTransaction) {
-        if (!typeCompte) {
-          return res.status(400).json({
-            success: false,
-            message: 'Type de compte requis pour transactions début/fin journée'
-          });
-        }
-        
-        const validAccountTypes = ['LIQUIDE', 'ORANGE_MONEY', 'WAVE', 'UV_MASTER', 'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM', 'AUTRES'];
-        
-        if (!validAccountTypes.includes(typeCompte.toUpperCase())) {
-          return res.status(400).json({ success: false, message: 'Type de compte invalide' });
-        }
-      }
-
-      console.log('✅ [CONTROLLER] Validation passée, appel service...');
-
-      // ← callerRole: 'ADMIN' → le service ne bloquera PAS sur canEnterDebut/canEnterFin
-      const result = await TransactionService.createAdminTransaction(adminId, {
-        superviseurId,
-        typeCompte: isPartnerTransaction ? null : typeCompte.toUpperCase(),
-        typeOperation,
-        montant: montantFloat,
-        partenaireId: partenaireId || null,
-        partenaireNom: partenaireNom || null,
-        telephoneLibre: telephoneLibre || null,
-        callerRole: 'ADMIN',
-      });
-
-      const operationLabel = typeOperation === 'depot' ? 'Dépôt' : 'Retrait';
-      const transactionTypeLabel = isPartnerTransaction 
-        ? `${operationLabel} partenaire` 
-        : `${operationLabel} journée`;
-
-      res.status(201).json({
-        success: true,
-        message: `${transactionTypeLabel} créé avec succès`,
-        data: {
-          ...result,
-          summary: {
-            type: isPartnerTransaction ? 'PARTENAIRE' : 'JOURNEE',
-            operation: typeOperation,
-            superviseur: result.transaction.superviseurNom,
-            partenaire: result.transaction.partnerName,
-            montant: result.transaction.montant,
-            typeCompte: isPartnerTransaction ? null : typeCompte.toUpperCase(),
-            soldeApres: result.soldeActuel || null,
-            isRegisteredPartner: result.transaction.isRegisteredPartner || false
-          }
-        }
-      });
-
-    } catch (error) {
-      console.error('❌ [CONTROLLER] Erreur createAdminTransaction:', error);
-      
-      const errorMappings = {
-        'Superviseur non trouvé': { status: 404, message: 'Superviseur non trouvé ou inactif' },
-        'Partenaire non trouvé': { status: 404, message: 'Partenaire enregistré non trouvé ou inactif' },
-        'Solde insuffisant': { status: 400, message: error.message },
-        'Nom du partenaire invalide': { status: 400, message: error.message }
-      };
-
-      for (const [errorKey, errorResponse] of Object.entries(errorMappings)) {
-        if (error.message.includes(errorKey)) {
-          return res.status(errorResponse.status).json({ success: false, message: errorResponse.message });
-        }
-      }
-
-      res.status(500).json({
+    const validationErrors = [];
+    
+    if (!superviseurId) validationErrors.push('superviseurId requis');
+    
+    const hasPartenaireId  = !!partenaireId;
+    const hasPartenaireNom = !!partenaireNom;
+    const isPartnerTransaction = hasPartenaireId || hasPartenaireNom;
+    
+    if (!isPartnerTransaction && !typeCompte) {
+      validationErrors.push('typeCompte requis pour transactions début/fin journée');
+    }
+    
+    if (hasPartenaireId && hasPartenaireNom) {
+      validationErrors.push('Choisissez soit un partenaire enregistré, soit un nom libre (pas les deux)');
+    }
+    
+    if (!typeOperation) validationErrors.push('typeOperation requis');
+    if (!montant)       validationErrors.push('montant requis');
+    
+    if (validationErrors.length > 0) {
+      return res.status(400).json({
         success: false,
-        message: error.message || 'Erreur lors de la création de la transaction admin'
+        message: 'Données manquantes: ' + validationErrors.join(', ')
       });
     }
+
+    const montantFloat = parseFloat(montant);
+    
+    if (isNaN(montantFloat) || montantFloat <= 0) {
+      return res.status(400).json({ success: false, message: 'Le montant doit être un nombre positif' });
+    }
+
+    if (!['depot', 'retrait'].includes(typeOperation)) {
+      return res.status(400).json({ success: false, message: 'typeOperation doit être "depot" ou "retrait"' });
+    }
+
+    if (!isPartnerTransaction) {
+      if (!typeCompte) {
+        return res.status(400).json({
+          success: false,
+          message: 'Type de compte requis pour transactions début/fin journée'
+        });
+      }
+      
+      // ✨ NOUVEAU : Validation dynamique des types de compte
+      const AccountTypeService = (await import('../services/AccountTypeService.js')).default;
+      
+      const typeCompteUpper = typeCompte.toUpperCase();
+      
+      // Vérifier si le type existe dans la configuration (y compris les slots personnalisés)
+      const isValidType = await AccountTypeService.isValidType(typeCompteUpper);
+      
+      if (!isValidType) {
+        // Récupérer tous les types actifs pour un message d'erreur utile
+        const activeTypes = await AccountTypeService.getActiveOptions();
+        const activeTypeValues = activeTypes.map(t => t.value);
+        
+        return res.status(400).json({ 
+          success: false, 
+          message: `Type de compte invalide. Types autorisés: ${activeTypeValues.join(', ')}`,
+          validTypes: activeTypeValues
+        });
+      }
+      
+      // Vérifier si le type est actif
+      const isActive = await AccountTypeService.isTypeActive(typeCompteUpper);
+      if (!isActive) {
+        const label = await AccountTypeService.getTypeLabel(typeCompteUpper);
+        return res.status(400).json({ 
+          success: false, 
+          message: `Le type de compte "${label}" est actuellement désactivé. Contactez l'administrateur.`
+        });
+      }
+    }
+
+    console.log('✅ [CONTROLLER] Validation passée, appel service...');
+
+    const result = await TransactionService.createAdminTransaction(adminId, {
+      superviseurId,
+      typeCompte:      isPartnerTransaction ? null : typeCompte.toUpperCase(),
+      typeOperation,
+      montant:         montantFloat,
+      partenaireId:    partenaireId    || null,
+      partenaireNom:   partenaireNom   || null,
+      telephoneLibre:  telephoneLibre  || null,
+      finSecondaire:   finSecondaire   ?? null,
+      callerRole:      'ADMIN',
+    });
+
+    const operationLabel     = typeOperation === 'depot' ? 'Dépôt' : 'Retrait';
+    const transactionTypeLabel = isPartnerTransaction 
+      ? `${operationLabel} partenaire` 
+      : `${operationLabel} journée`;
+
+    res.status(201).json({
+      success: true,
+      message: `${transactionTypeLabel} créé avec succès`,
+      data: {
+        ...result,
+        summary: {
+          type:               isPartnerTransaction ? 'PARTENAIRE' : 'JOURNEE',
+          operation:          typeOperation,
+          superviseur:        result.transaction.superviseurNom,
+          partenaire:         result.transaction.partnerName,
+          montant:            result.transaction.montant,
+          typeCompte:         isPartnerTransaction ? null : typeCompte.toUpperCase(),
+          soldeApres:         result.soldeActuel || null,
+          isRegisteredPartner: result.transaction.isRegisteredPartner || false
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ [CONTROLLER] Erreur createAdminTransaction:', error);
+    
+    const errorMappings = {
+      'Superviseur non trouvé':    { status: 404, message: 'Superviseur non trouvé ou inactif' },
+      'Partenaire non trouvé':     { status: 404, message: 'Partenaire enregistré non trouvé ou inactif' },
+      'Solde insuffisant':         { status: 400, message: error.message },
+      'Nom du partenaire invalide':{ status: 400, message: error.message }
+    };
+
+    for (const [errorKey, errorResponse] of Object.entries(errorMappings)) {
+      if (error.message.includes(errorKey)) {
+        return res.status(errorResponse.status).json({ success: false, message: errorResponse.message });
+      }
+    }
+
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Erreur lors de la création de la transaction admin'
+    });
   }
+}
 
   // ✏️ MISE À JOUR TRANSACTION - ULTRA OPTIMISÉE
   async updateTransaction(req, res) {
@@ -513,21 +536,21 @@ class TransactionController {
       }
 
       const userRole = req.user.role;
-      const userId = req.user.id;
+      const userId   = req.user.id;
       
-      let canView = false;
+      let canView    = false;
       let viewReason = '';
 
       if (userRole === 'ADMIN') {
-        canView = true;
+        canView    = true;
         viewReason = 'Admin - accès total';
       } else if (userRole === 'SUPERVISEUR') {
-        canView = userId === transaction.destinataireId || 
-                  userId === transaction.envoyeurId || 
-                  !!transaction.partenaireId;
+        canView    = userId === transaction.destinataireId || 
+                     userId === transaction.envoyeurId || 
+                     !!transaction.partenaireId;
         viewReason = canView ? 'Superviseur - transaction autorisée' : 'Accès refusé';
       } else if (userRole === 'PARTENAIRE') {
-        canView = userId === transaction.partenaireId || userId === transaction.envoyeurId;
+        canView    = userId === transaction.partenaireId || userId === transaction.envoyeurId;
         viewReason = canView ? 'Partenaire - sa transaction' : 'Accès refusé';
       }
 
@@ -535,7 +558,7 @@ class TransactionController {
         return res.status(403).json({ success: false, message: 'Vous n\'avez pas accès à cette transaction' });
       }
 
-      const ageInDays = Math.floor((Date.now() - new Date(transaction.createdAt)) / (1000 * 60 * 60 * 24));
+      const ageInDays      = Math.floor((Date.now() - new Date(transaction.createdAt)) / (1000 * 60 * 60 * 24));
       const modifiableTypes = new Set(['DEPOT', 'RETRAIT', 'DEBUT_JOURNEE', 'FIN_JOURNEE']);
       
       const permissionRules = {
@@ -557,7 +580,7 @@ class TransactionController {
         }
       };
 
-      const permissions = permissionRules[userRole] || permissionRules.PARTENAIRE;
+      const permissions    = permissionRules[userRole] || permissionRules.PARTENAIRE;
       const convertFromInt = (value) => Number(value) / 100;
 
       res.json({
@@ -572,7 +595,7 @@ class TransactionController {
             partenaire: transaction.partenaire,
             compte: transaction.compteDestination ? {
               ...transaction.compteDestination,
-              balance: convertFromInt(transaction.compteDestination.balance),
+              balance:        convertFromInt(transaction.compteDestination.balance),
               initialBalance: convertFromInt(transaction.compteDestination.initialBalance)
             } : null,
             metadata: transaction.metadata ? JSON.parse(transaction.metadata) : null
@@ -584,7 +607,7 @@ class TransactionController {
           },
           ageInDays,
           rules: {
-            admin: { timeLimit: 7, canModifyAll: true, canDeleteAll: true },
+            admin:       { timeLimit: 7, canModifyAll: true, canDeleteAll: true },
             superviseur: {
               timeLimit: 1, canModifyOwn: true, canDeleteOwn: 'DEPOT/RETRAIT seulement',
               restrictions: ['Seulement ses propres transactions', 'Maximum 24h après création']
@@ -630,8 +653,8 @@ class TransactionController {
             destinataire:{ select: { nomComplet: true } }
           },
           orderBy: { createdAt: 'desc' },
-          skip: (parseInt(page) - 1) * parseInt(limit),
-          take: parseInt(limit)
+          skip:  (parseInt(page) - 1) * parseInt(limit),
+          take:  parseInt(limit)
         }),
         prisma.transaction.count({ where: whereClause })
       ]);
@@ -640,9 +663,9 @@ class TransactionController {
       
       const formattedAudit = auditTransactions.map(audit => ({
         id: audit.id, type: audit.type, description: audit.description, createdAt: audit.createdAt,
-        adminResponsable: audit.envoyeur.nomComplet,
+        adminResponsable:    audit.envoyeur.nomComplet,
         superviseurConcerne: audit.destinataire.nomComplet,
-        montant: convertFromInt(audit.montant),
+        montant:  convertFromInt(audit.montant),
         metadata: audit.metadata ? JSON.parse(audit.metadata) : null
       }));
 
@@ -653,8 +676,9 @@ class TransactionController {
           auditHistory: formattedAudit,
           pagination: {
             currentPage: parseInt(page),
-            totalPages: Math.ceil(totalCount / parseInt(limit)),
-            totalCount, limit: parseInt(limit)
+            totalPages:  Math.ceil(totalCount / parseInt(limit)),
+            totalCount,
+            limit:       parseInt(limit)
           }
         }
       });
@@ -676,7 +700,7 @@ class TransactionController {
       const { accountType, accountKey, newValue } = req.body;
 
       const requiredFields = { accountType, accountKey, newValue };
-      const missingFields = Object.entries(requiredFields)
+      const missingFields  = Object.entries(requiredFields)
         .filter(([key, value]) => value === undefined || value === null || value === '')
         .map(([key]) => key);
 
@@ -711,8 +735,10 @@ class TransactionController {
         message: `Compte ${accountKey} mis à jour avec succès`,
         data: {
           supervisorId, accountType, accountKey,
-          oldValue: result.oldValue, newValue: result.newValue,
-          updatedAt: new Date(), updatedBy: req.user.nomComplet
+          oldValue:  result.oldValue,
+          newValue:  result.newValue,
+          updatedAt: new Date(),
+          updatedBy: req.user.nomComplet
         }
       });
 
@@ -746,7 +772,7 @@ class TransactionController {
       }
 
       const lastTransferDate = await TransactionService.getLastTransferDate();
-      const today = new Date().toDateString();
+      const today            = new Date().toDateString();
       const transferDoneToday = lastTransferDate === today;
 
       res.json({
@@ -779,7 +805,7 @@ class TransactionController {
       if (dateFrom || dateTo) {
         whereClause.createdAt = {};
         if (dateFrom) whereClause.createdAt.gte = new Date(dateFrom);
-        if (dateTo) whereClause.createdAt.lte = new Date(dateTo);
+        if (dateTo)   whereClause.createdAt.lte = new Date(dateTo);
       }
 
       const [archivedTransactions, totalCount] = await Promise.all([
@@ -804,9 +830,9 @@ class TransactionController {
       const formattedTransactions = archivedTransactions.map(tx => ({
         id: tx.id, type: tx.type, montant: convertFromInt(tx.montant),
         description: tx.description, createdAt: tx.createdAt, archivedAt: tx.archivedAt,
-        partenaire: tx.partenaire?.nomComplet,
+        partenaire:  tx.partenaire?.nomComplet,
         superviseur: tx.destinataire?.nomComplet,
-        typeCompte: tx.compteDestination?.type
+        typeCompte:  tx.compteDestination?.type
       }));
 
       res.json({
@@ -816,8 +842,9 @@ class TransactionController {
           archivedTransactions: formattedTransactions,
           pagination: {
             currentPage: parseInt(page),
-            totalPages: Math.ceil(totalCount / parseInt(limit)),
-            totalCount, limit: parseInt(limit)
+            totalPages:  Math.ceil(totalCount / parseInt(limit)),
+            totalCount,
+            limit:       parseInt(limit)
           }
         }
       });
@@ -832,7 +859,7 @@ class TransactionController {
   async getAvailableDates(req, res) {
     try {
       const userId = req.user.role === 'SUPERVISEUR' ? req.user.id : null;
-      const role = req.user.role;
+      const role   = req.user.role;
       
       const dates = await TransactionService.getAvailableDates(userId, role);
 
@@ -871,7 +898,6 @@ class TransactionController {
   // PARTENAIRES LIBRES FRÉQUENTS — NOUVEAU
   // =====================================
 
-  // 🔍 LISTE DES PARTENAIRES LIBRES FRÉQUENTS
   async getFrequentFreePartners(req, res) {
     try {
       if (req.user.role !== 'ADMIN') {
@@ -901,7 +927,6 @@ class TransactionController {
     }
   }
 
-  // 🔄 CONVERTIR PARTENAIRE LIBRE EN VRAI COMPTE
   async convertFreePartner(req, res) {
     try {
       if (req.user.role !== 'ADMIN') {

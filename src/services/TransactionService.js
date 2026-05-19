@@ -244,6 +244,74 @@ class TransactionService {
     };
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  // NOUVEAU ─ Sauvegarde des F2 (finSecondaire) AVANT le reset
+  // Doit être appelé juste avant transferBalancesToInitial()
+  // ══════════════════════════════════════════════════════════════════════════
+  async saveF2SnapshotsForAllSupervisors(date = new Date()) {
+    try {
+      const targetDate = new Date(date);
+      targetDate.setHours(0, 0, 0, 0);
+      const dateStr = targetDate.toISOString().split('T')[0];
+
+      console.log(`💾 [F2 SNAPSHOT] Sauvegarde des F2 pour le ${dateStr}...`);
+
+      const supervisors = await prisma.user.findMany({
+        where: { role: 'SUPERVISEUR', status: 'ACTIVE' },
+        select: { id: true, nomComplet: true }
+      });
+
+      let saved = 0;
+      let skipped = 0;
+
+      for (const { id: userId, nomComplet } of supervisors) {
+        try {
+          const accounts = await prisma.account.findMany({
+            where: { userId },
+            select: { type: true, finSecondaire: true }
+          });
+
+          const f2Data = {};
+          accounts.forEach(account => {
+            // finSecondaire peut être BigInt ou null
+            const f2Raw = account.finSecondaire;
+            if (f2Raw !== null && f2Raw !== undefined) {
+              const f2BigInt = typeof f2Raw === 'bigint' ? f2Raw : BigInt(f2Raw);
+              if (f2BigInt > BigInt(0)) {
+                f2Data[account.type] = f2BigInt.toString();
+              }
+            }
+          });
+
+          if (Object.keys(f2Data).length > 0) {
+            const key = `snapshot_f2_${userId}_${dateStr}`;
+            await prisma.systemConfig.upsert({
+              where:  { key },
+              update: { value: JSON.stringify(f2Data) },
+              create: { key, value: JSON.stringify(f2Data) }
+            });
+            console.log(`✅ [F2 SNAPSHOT] ${nomComplet} (${userId}) → ${dateStr}:`, f2Data);
+            saved++;
+          } else {
+            console.log(`⏭️  [F2 SNAPSHOT] ${nomComplet} — aucun F2 à sauvegarder`);
+            skipped++;
+          }
+        } catch (supError) {
+          console.error(`❌ [F2 SNAPSHOT] Erreur pour ${userId}:`, supError);
+          // Non-bloquant : on continue pour les autres superviseurs
+        }
+      }
+
+      console.log(`✅ [F2 SNAPSHOT] Terminé : ${saved} sauvegardés, ${skipped} sans F2`);
+      return { saved, skipped, total: supervisors.length };
+
+    } catch (error) {
+      console.error('❌ [F2 SNAPSHOT] Erreur globale saveF2SnapshotsForAllSupervisors:', error);
+      // Non-bloquant pour le reset
+      return { saved: 0, skipped: 0, error: error.message };
+    }
+  }
+
   async createDailySnapshot(userId, date = new Date()) {
     try {
       const targetDate = new Date(date);
@@ -491,62 +559,55 @@ class TransactionService {
         MONEYGRAM:     this.convertFromInt(snapshot.moneygramFin),
       };
 
-      // F2 depuis les comptes actuels (pour les types fixes)
-      const sortieF2  = {};
-      const diffF2F1  = {};
+      const sortieF2 = {};
+      const diffF2F1 = {};
 
       const autresDebut  = this.convertFromInt(snapshot.autresDebut);
       const autresSortie = this.convertFromInt(snapshot.autresFin);
       if (autresDebut  > 0) debut['AUTRES']  = autresDebut;
       if (autresSortie > 0) sortie['AUTRES'] = autresSortie;
 
-      // Fallback previousInitialBalance pour anciens snapshots
-      const fixedExtraTypes = ['FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM'];
-      for (const type of fixedExtraTypes) {
-        const access    = accessMap[type] || 'both';
-        const debutVal  = debut[type]  || 0;
-        const sortieVal = sortie[type] || 0;
+      // ── CORRECTION : Lire F2 depuis snapshot_f2 persisté avant le reset ──
+      // Cette clé est créée par saveF2SnapshotsForAllSupervisors() juste avant
+      // transferBalancesToInitial(). Elle contient les finSecondaire réels du jour J.
+      // IMPORTANT : On ne fait PLUS de fallback sur finSecondaire actuel car il
+      // est toujours remis à 0 lors du reset, donc inutilisable pour les dates passées.
+      const f2SnapshotKey = `snapshot_f2_${userId}_${dateStr}`;
+      const f2SnapshotConfig = await prisma.systemConfig.findFirst({
+        where: { key: f2SnapshotKey }
+      });
+      const f2SnapshotData = f2SnapshotConfig?.value
+        ? JSON.parse(f2SnapshotConfig.value)
+        : {};
 
-        if (debutVal === 0 && sortieVal === 0) {
-          const account = await prisma.account.findUnique({
-            where: { userId_type: { userId, type } },
-            select: { previousInitialBalance: true, finSecondaire: true }
-          });
-          if (account?.previousInitialBalance) {
-            const valeur = this.convertFromInt(account.previousInitialBalance);
-            if (valeur > 0) {
-              if (access === 'fin_only') sortie[type] = valeur;
-              else debut[type] = valeur;
-            }
-          }
-          // Récupérer F2 si disponible
-          if (account?.finSecondaire) {
-            const f2Val = this.convertFromInt(account.finSecondaire);
+      console.log(`📸 [SNAPSHOT F2] Clé: ${f2SnapshotKey}, Données:`, f2SnapshotData);
+
+      // ── Appliquer F2 sur tous les types (fixes + principaux) ───────────────
+      // On unifie la logique en une seule boucle sur tous les types connus
+      const allKnownTypes = [
+        'LIQUIDE', 'ORANGE_MONEY', 'WAVE', 'UV_MASTER',
+        'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM', 'AUTRES'
+      ];
+
+      for (const type of allKnownTypes) {
+        const f2Raw = f2SnapshotData[type];
+        if (f2Raw !== undefined && f2Raw !== null) {
+          try {
+            const f2Val = this.convertFromInt(BigInt(f2Raw));
             if (f2Val > 0) {
               sortieF2[type] = f2Val;
+              // diffF2F1 = F2 − F1 (F1 = sortie[type])
               diffF2F1[type] = f2Val - (sortie[type] || 0);
             }
+          } catch (parseError) {
+            console.error(`⚠️ [SNAPSHOT F2] Erreur parsing F2 pour ${type}:`, parseError);
           }
         }
+        // ✅ AUCUN fallback sur finSecondaire actuel :
+        // après le reset il vaut toujours 0, donc inutile et trompeur.
       }
 
-      // Récupérer F2 pour les types principaux (LIQUIDE, ORANGE_MONEY, WAVE, UV_MASTER)
-      const mainTypes = ['LIQUIDE', 'ORANGE_MONEY', 'WAVE', 'UV_MASTER'];
-      for (const type of mainTypes) {
-        const account = await prisma.account.findUnique({
-          where: { userId_type: { userId, type } },
-          select: { finSecondaire: true }
-        });
-        if (account?.finSecondaire) {
-          const f2Val = this.convertFromInt(account.finSecondaire);
-          if (f2Val > 0) {
-            sortieF2[type] = f2Val;
-            diffF2F1[type] = f2Val - (sortie[type] || 0);
-          }
-        }
-      }
-
-      // snapshot_extra pour slots AUTRES_* custom
+      // ── snapshot_extra pour slots AUTRES_* custom ───────────────────────────
       const extraKey = `snapshot_extra_${userId}_${dateStr}`;
       const extraConfig = await prisma.systemConfig.findFirst({ where: { key: extraKey } });
 
@@ -554,11 +615,23 @@ class TransactionService {
         try {
           const extraTypes = JSON.parse(extraConfig.value);
           for (const [type, values] of Object.entries(extraTypes)) {
-            if ([...fixedExtraTypes, 'LIQUIDE', 'ORANGE_MONEY', 'WAVE', 'UV_MASTER', 'AUTRES'].includes(type)) continue;
+            // Ignorer les types déjà traités
+            if (allKnownTypes.includes(type)) continue;
 
             const d  = this.convertFromInt(BigInt(values.debut));
             const f  = this.convertFromInt(BigInt(values.fin));
-            const f2 = values.finSecondaire ? this.convertFromInt(BigInt(values.finSecondaire)) : 0;
+            // F2 pour les custom : priorité snapshot_f2, sinon valeur dans extra
+            const f2FromSnapshot = f2SnapshotData[type];
+            let f2 = 0;
+            if (f2FromSnapshot !== undefined && f2FromSnapshot !== null) {
+              try {
+                f2 = this.convertFromInt(BigInt(f2FromSnapshot));
+              } catch (_) { /* ignore */ }
+            } else if (values.finSecondaire) {
+              try {
+                f2 = this.convertFromInt(BigInt(values.finSecondaire));
+              } catch (_) { /* ignore */ }
+            }
 
             if (d  > 0) debut[type]   = d;
             if (f  > 0) sortie[type]  = f;
@@ -1096,6 +1169,11 @@ class TransactionService {
       if (shouldReset) {
         try {
           const archivedCount = await this.archivePartnerTransactionsDynamic();
+
+          // ── CORRECTION : Sauvegarder F2 AVANT le transfert des soldes ──
+          console.log('💾 [MANUAL RESET] Sauvegarde des F2 avant transfert...');
+          await this.saveF2SnapshotsForAllSupervisors(now);
+
           await this.transferBalancesToInitial();
           const cleanedCount = await this.cleanupDashboardAfterReset();
           const resetKey = `${dateKey}-SUCCESS-${resetCheck.currentTime}-${resetHourMinute}-manual`;
@@ -1247,25 +1325,68 @@ class TransactionService {
       yesterday.setDate(yesterday.getDate() - 1);
       yesterday.setHours(0, 0, 0, 0);
 
-      console.log('📸 [CRON RESET] Étape 0/5 - Création des snapshots quotidiens...');
+      // Étape 0 : Snapshots quotidiens
+      console.log('📸 [CRON RESET] Étape 0/6 - Création des snapshots quotidiens...');
       const snapshotResult = await this.createSnapshotsForAllSupervisors(yesterday);
-      console.log('📦 [CRON RESET] Étape 1/5 - Archivage des transactions partenaires...');
+
+      // ── CORRECTION : Étape 0.5 — Sauvegarder F2 AVANT le transfert ──────
+      // On utilise `now` (aujourd'hui) car les comptes reflètent encore
+      // les valeurs de la journée en cours qui va être archivée.
+      // La date du snapshot F2 correspond au jour qui se termine (yesterday
+      // en logique métier, mais les comptes sont encore à jour à ce moment).
+      console.log('💾 [CRON RESET] Étape 0.5/6 - Sauvegarde des F2 avant reset...');
+      const f2Result = await this.saveF2SnapshotsForAllSupervisors(yesterday);
+      console.log(`💾 [CRON RESET] F2 : ${f2Result.saved} sauvegardés, ${f2Result.skipped} sans F2`);
+
+      // Étape 1 : Archivage
+      console.log('📦 [CRON RESET] Étape 1/6 - Archivage des transactions partenaires...');
       const archivedCount = await this.archivePartnerTransactionsDynamic();
-      console.log('💰 [CRON RESET] Étape 2/5 - Transfert des soldes...');
+
+      // Étape 2 : Transfert (remet finSecondaire à 0 — doit être après saveF2)
+      console.log('💰 [CRON RESET] Étape 2/6 - Transfert des soldes...');
       await this.transferBalancesToInitial();
-      console.log('🧹 [CRON RESET] Étape 3/5 - Nettoyage des données...');
+
+      // Étape 3 : Nettoyage
+      console.log('🧹 [CRON RESET] Étape 3/6 - Nettoyage des données...');
       const cleanedCount = await this.cleanupDashboardAfterReset();
-      console.log('💾 [CRON RESET] Étape 4/5 - Enregistrement du reset...');
+
+      // Étape 4 : Enregistrement
+      console.log('💾 [CRON RESET] Étape 4/6 - Enregistrement du reset...');
       const resetKey = `${now.toDateString()}-SUCCESS-${now.getHours()}h${now.getMinutes()}-${adminId}`;
       await this.saveResetDate(resetKey);
 
       const adminUser = await prisma.user.findFirst({ where: { role: 'ADMIN' }, select: { id: true } });
-      await prisma.transaction.create({ data: { montant: 0, type: 'AUDIT_MODIFICATION', description: `Reset automatique ${adminId} - ${snapshotResult.successful} snapshots, ${archivedCount} archivées, ${cleanedCount} nettoyées`, envoyeurId: adminUser?.id || 'cmffpzf8e0000248t0hu4w1gr' } });
+      await prisma.transaction.create({
+        data: {
+          montant: 0,
+          type: 'AUDIT_MODIFICATION',
+          description: `Reset automatique ${adminId} - ${snapshotResult.successful} snapshots, ${f2Result.saved} F2 sauvegardés, ${archivedCount} archivées, ${cleanedCount} nettoyées`,
+          envoyeurId: adminUser?.id || 'cmffpzf8e0000248t0hu4w1gr'
+        }
+      });
 
-      console.log('📢 [CRON RESET] Étape 5/5 - Envoi des notifications...');
-      const notificationResult = await this.notifyDashboardRefresh({ archivedCount, cleanedCount, snapshotsCreated: snapshotResult.successful, executedAt: now.toISOString() });
+      // Étape 5 : Notifications
+      console.log('📢 [CRON RESET] Étape 5/6 - Envoi des notifications...');
+      const notificationResult = await this.notifyDashboardRefresh({
+        archivedCount, cleanedCount,
+        snapshotsCreated: snapshotResult.successful,
+        f2Saved: f2Result.saved,
+        executedAt: now.toISOString()
+      });
 
-      return { success: true, snapshotsCreated: snapshotResult.successful, archivedCount, cleanedCount, executedAt: now.toISOString(), type: adminId, notifications: notificationResult, message: `Reset automatique ${adminId} exécuté avec succès à ${now.toISOString()}` };
+      console.log(`✅ [CRON RESET ${adminId.toUpperCase()}] Reset terminé avec succès`);
+
+      return {
+        success: true,
+        snapshotsCreated: snapshotResult.successful,
+        f2Saved: f2Result.saved,
+        archivedCount,
+        cleanedCount,
+        executedAt: now.toISOString(),
+        type: adminId,
+        notifications: notificationResult,
+        message: `Reset automatique ${adminId} exécuté avec succès à ${now.toISOString()}`
+      };
 
     } catch (error) {
       console.error(`❌ [CRON RESET ${adminId.toUpperCase()}] Erreur:`, error);
@@ -1337,7 +1458,6 @@ class TransactionService {
         select: {
           id: true, nomComplet: true, status: true,
           accounts: {
-            // ← finSecondaire ajouté
             select: { type: true, balance: true, initialBalance: true, previousInitialBalance: true, finSecondaire: true }
           },
           transactionsRecues: {
@@ -1357,7 +1477,6 @@ class TransactionService {
       let featuredSolde = 0, featuredSorties = 0;
 
       const supervisorCards = await Promise.all(supervisors.map(async (supervisor) => {
-        // ← sortieF2 et diffF2F1 ajoutés
         const accountsByType = { debut: {}, sortie: {}, sortieF2: {}, diffF2F1: {} };
 
         if (snapshotDate) {
@@ -1365,6 +1484,8 @@ class TransactionService {
           if (snapshot) {
             Object.assign(accountsByType.debut,    snapshot.comptes.debut);
             Object.assign(accountsByType.sortie,   snapshot.comptes.sortie);
+            // ── CORRECTION : sortieF2 et diffF2F1 sont maintenant correctement
+            // remplis par getSnapshotForDate grâce à snapshot_f2 persisté ──
             Object.assign(accountsByType.sortieF2, snapshot.comptes.sortieF2 || {});
             Object.assign(accountsByType.diffF2F1, snapshot.comptes.diffF2F1 || {});
 
@@ -1379,6 +1500,7 @@ class TransactionService {
               const ancienSortie = this.convertFromInt(account.initialBalance || 0);
               accountsByType.debut[account.type]  = ancienDebut;
               accountsByType.sortie[account.type] = ancienSortie;
+              // Pas de F2 disponible dans ce fallback (snapshot manquant)
               if (account.type === featuredType) {
                 featuredSolde   += ancienDebut;
                 featuredSorties += ancienSortie;
@@ -1386,18 +1508,18 @@ class TransactionService {
             });
           }
         } else {
+          // Données en direct (today)
           supervisor.accounts.forEach(account => {
             const initial = this.convertFromInt(account.initialBalance || 0);
             const current = this.convertFromInt(account.balance || 0);
             const f2      = this.convertFromInt(account.finSecondaire || 0);
 
             accountsByType.debut[account.type]  = initial;
-            accountsByType.sortie[account.type] = current; // F1 — inchangé pour totaux
+            accountsByType.sortie[account.type] = current;
 
-            // F2 uniquement si saisi
             if (f2 > 0) {
               accountsByType.sortieF2[account.type]  = f2;
-              accountsByType.diffF2F1[account.type]  = f2 - current; // F2 - F1
+              accountsByType.diffF2F1[account.type]  = f2 - current;
             }
 
             if (account.type === featuredType) {
@@ -1455,7 +1577,7 @@ class TransactionService {
 
         return {
           id: supervisor.id, nom: supervisor.nomComplet, status: supervisor.status,
-          comptes: accountsByType, // ← inclut sortieF2 et diffF2F1
+          comptes: accountsByType,
           totaux: {
             debutTotal, sortieTotal, grTotal,
             formatted: {
@@ -1563,7 +1685,6 @@ class TransactionService {
           where: { id: superviseurId },
           select: {
             id: true, nomComplet: true, status: true,
-            // ← finSecondaire ajouté
             accounts: { select: { type: true, balance: true, initialBalance: true, previousInitialBalance: true, finSecondaire: true } }
           }
         }),
@@ -1601,29 +1722,48 @@ class TransactionService {
         };
       }
 
-      // ← sortieF2 et diffF2F1 ajoutés
       const accountsByType = { debut: {}, sortie: {}, sortieF2: {}, diffF2F1: {} };
       let totalDebutPersonnel = 0, totalSortiePersonnel = 0;
 
-      if (includeArchived && period === 'yesterday') {
-        const accessMap = await readEntryAccess();
-        supervisor.accounts.forEach(account => {
-          const access = accessMap[account.type] || 'both';
-          let ancienDebut, ancienSortie;
-          if (access === 'fin_only') {
-            ancienDebut  = 0;
-            ancienSortie = this.convertFromInt(account.previousInitialBalance || 0);
-          } else {
-            ancienDebut  = this.convertFromInt(account.previousInitialBalance || 0);
-            ancienSortie = this.convertFromInt(account.initialBalance || 0);
-          }
-          accountsByType.debut[account.type]  = ancienDebut;
-          accountsByType.sortie[account.type] = ancienSortie;
-          totalDebutPersonnel  += ancienDebut;
-          totalSortiePersonnel += ancienSortie;
-          // F2 pas disponible pour hier (remis à 0 au reset)
-        });
+      if (includeArchived && (period === 'yesterday' || period === 'custom')) {
+        // ── CORRECTION : Pour les dates passées, utiliser le snapshot si disponible ──
+        const snapshotTargetDate = period === 'yesterday'
+          ? (() => { const d = new Date(); d.setDate(d.getDate() - 1); d.setHours(0,0,0,0); return d; })()
+          : (() => { const d = new Date(customDate); d.setHours(0,0,0,0); return d; })();
+
+        const snapshot = await this.getSnapshotForDate(superviseurId, snapshotTargetDate);
+
+        if (snapshot) {
+          // Utiliser le snapshot : F2 correctement rempli via snapshot_f2
+          Object.assign(accountsByType.debut,    snapshot.comptes.debut);
+          Object.assign(accountsByType.sortie,   snapshot.comptes.sortie);
+          Object.assign(accountsByType.sortieF2, snapshot.comptes.sortieF2 || {});
+          Object.assign(accountsByType.diffF2F1, snapshot.comptes.diffF2F1 || {});
+
+          totalDebutPersonnel  = snapshot.totaux.debutTotal;
+          totalSortiePersonnel = snapshot.totaux.sortieTotal;
+        } else {
+          // Fallback : données actuelles du compte (F2 non disponible)
+          const accessMap = await readEntryAccess();
+          supervisor.accounts.forEach(account => {
+            const access = accessMap[account.type] || 'both';
+            let ancienDebut, ancienSortie;
+            if (access === 'fin_only') {
+              ancienDebut  = 0;
+              ancienSortie = this.convertFromInt(account.previousInitialBalance || 0);
+            } else {
+              ancienDebut  = this.convertFromInt(account.previousInitialBalance || 0);
+              ancienSortie = this.convertFromInt(account.initialBalance || 0);
+            }
+            accountsByType.debut[account.type]  = ancienDebut;
+            accountsByType.sortie[account.type] = ancienSortie;
+            totalDebutPersonnel  += ancienDebut;
+            totalSortiePersonnel += ancienSortie;
+            // F2 non disponible après reset (finSecondaire = 0)
+          });
+        }
       } else {
+        // Données en direct (today)
         supervisor.accounts.forEach(account => {
           const initial = this.convertFromInt(account.initialBalance || 0);
           const current = this.convertFromInt(account.balance || 0);
@@ -1659,7 +1799,7 @@ class TransactionService {
       });
 
       let featuredDebut, featuredSortie;
-      if (includeArchived && period === 'yesterday') {
+      if (includeArchived && (period === 'yesterday' || period === 'custom')) {
         featuredDebut  = featuredAccounts.reduce((t, a) => t + this.convertFromInt(a.previousInitialBalance || 0), 0);
         featuredSortie = featuredAccounts.reduce((t, a) => t + this.convertFromInt(a.initialBalance || 0), 0);
       } else {
@@ -1705,7 +1845,7 @@ class TransactionService {
           total:    featuredSortie,
           formatted: featuredFormatted
         },
-        comptes: accountsByType, // ← inclut sortieF2 et diffF2F1
+        comptes: accountsByType,
         totaux: {
           debutTotal: totalDebutPersonnel, sortieTotal: totalSortiePersonnel, grTotal,
           formatted: {
@@ -1719,7 +1859,7 @@ class TransactionService {
           period, customDate, resetConfig: this.getResetConfig(), includeArchived,
           totalTransactionsFound: allTransactions.length,
           filterApplied:  includeArchived ? 'archived_included' : 'archived_excluded',
-          dataSource:     includeArchived ? 'historical_after_reset' : 'current_live',
+          dataSource:     includeArchived ? 'historical_snapshot_or_fallback' : 'current_live',
           featuredType,
           featuredLabel
         }
