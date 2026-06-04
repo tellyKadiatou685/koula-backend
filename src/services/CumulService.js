@@ -26,7 +26,6 @@ class CumulService {
   convertFromInt(value) { return Number(value) / 100; }
   fmt(n) { return Math.abs(n).toLocaleString('fr-FR') + '\u202FF'; }
 
-  /** Active supervisors (shared across méthodes) */
   async getSupervisors() {
     return prisma.user.findMany({
       where: { role: 'SUPERVISEUR', status: 'ACTIVE' },
@@ -34,7 +33,6 @@ class CumulService {
     });
   }
 
-  /** Formate une date YYYY-MM-DD pour l'affichage */
   formatDate(dateStr) {
     return new Date(dateStr).toLocaleDateString('fr-FR', {
       weekday: 'short', day: '2-digit', month: 'short'
@@ -42,18 +40,165 @@ class CumulService {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // F1 / F2 — SNAPSHOT D'UNE DATE UNIQUE
+  // DONNÉES EN TEMPS RÉEL (POUR LA DATE DU JOUR)
   // ══════════════════════════════════════════════════════════════════════════
 
   /**
-   * Retourne les F1/F2 pour une seule journée, tous superviseurs confondus.
-   * @param {string} dateStr  YYYY-MM-DD
+   * Récupère les F1/F2 en temps réel depuis les comptes actuels
    */
+  async getF1F2Live(dateStr) {
+    try {
+      console.log(`📊 [F1F2 LIVE] Données temps réel pour ${dateStr}`);
+      
+      const supervisors = await this.getSupervisors();
+      let totalF1 = 0, totalF2 = 0;
+      const detailSups = [];
+
+      for (const sup of supervisors) {
+        const accounts = await prisma.account.findMany({
+          where: { userId: sup.id },
+          select: { type: true, balance: true, finSecondaire: true }
+        });
+
+        let supF1 = 0, supF2 = 0;
+        
+        for (const account of accounts) {
+          const f1 = this.convertFromInt(account.balance || 0);
+          const f2 = this.convertFromInt(account.finSecondaire || 0);
+          
+          // Ignorer les comptes partenaires
+          if (!account.type.startsWith('part-') && !account.type.startsWith('sup-')) {
+            supF1 += f1;
+            supF2 += f2;
+          }
+        }
+        
+        totalF1 += supF1;
+        totalF2 += supF2;
+        
+        detailSups.push({
+          id: sup.id,
+          nom: sup.nomComplet,
+          f1: supF1,
+          f2: supF2,
+          diff: supF2 - supF1,
+          hasData: (supF1 > 0 || supF2 > 0)
+        });
+      }
+
+      return {
+        success: true,
+        mode: 'date_unique',
+        date: dateStr,
+        dateDisplay: this.formatDate(dateStr) + ' (temps réel)',
+        totaux: { f1: totalF1, f2: totalF2, diff: totalF2 - totalF1 },
+        parSuperviseur: detailSups.sort((a, b) => b.diff - a.diff),
+        isLiveData: true
+      };
+
+    } catch (error) {
+      console.error('❌ [F1F2 LIVE] Erreur:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Récupère les transferts internationaux en temps réel
+   */
+  async getInternationalLive(dateStr) {
+    try {
+      console.log(`🌍 [INTL LIVE] Données temps réel pour ${dateStr}`);
+      
+      const supervisors = await this.getSupervisors();
+      
+      const totauxParOp = {
+        WESTERN_UNION: { debut: 0, fin: 0, gr: 0 },
+        RIA: { debut: 0, fin: 0, gr: 0 },
+        MONEYGRAM: { debut: 0, fin: 0, gr: 0 }
+      };
+      
+      const detailSups = [];
+
+      for (const sup of supervisors) {
+        const accounts = await prisma.account.findMany({
+          where: { userId: sup.id },
+          select: { type: true, balance: true, initialBalance: true }
+        });
+        
+        const ops = {
+          WESTERN_UNION: { debut: 0, fin: 0, gr: 0 },
+          RIA: { debut: 0, fin: 0, gr: 0 },
+          MONEYGRAM: { debut: 0, fin: 0, gr: 0 }
+        };
+        
+        for (const account of accounts) {
+          const type = account.type;
+          if (totauxParOp[type]) {
+            const debut = this.convertFromInt(account.initialBalance || 0);
+            const fin = this.convertFromInt(account.balance || 0);
+            const gr = debut - fin;
+            
+            ops[type].debut += debut;
+            ops[type].fin += fin;
+            ops[type].gr += gr;
+            
+            totauxParOp[type].debut += debut;
+            totauxParOp[type].fin += fin;
+            totauxParOp[type].gr += gr;
+          }
+        }
+        
+        const aDesDonnees = Object.values(ops).some(o => o.debut > 0 || o.fin > 0);
+        if (aDesDonnees) {
+          detailSups.push({
+            id: sup.id,
+            nom: sup.nomComplet,
+            ops,
+            hasData: true
+          });
+        }
+      }
+      
+      const totalGlobal = {
+        debut: totauxParOp.WESTERN_UNION.debut + totauxParOp.RIA.debut + totauxParOp.MONEYGRAM.debut,
+        fin: totauxParOp.WESTERN_UNION.fin + totauxParOp.RIA.fin + totauxParOp.MONEYGRAM.fin,
+        gr: totauxParOp.WESTERN_UNION.gr + totauxParOp.RIA.gr + totauxParOp.MONEYGRAM.gr
+      };
+
+      return {
+        success: true,
+        mode: 'date_unique',
+        date: dateStr,
+        dateDisplay: this.formatDate(dateStr) + ' (temps réel)',
+        totauxParOperateur: totauxParOp,
+        totalGlobal,
+        parSuperviseur: detailSups,
+        isLiveData: true
+      };
+
+    } catch (error) {
+      console.error('❌ [INTL LIVE] Erreur:', error);
+      throw error;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // F1 / F2 — SNAPSHOT D'UNE DATE UNIQUE
+  // ══════════════════════════════════════════════════════════════════════════
+
   async getF1F2ByDate(dateStr) {
     try {
-      console.log(`📊 [F1F2 DATE] ${dateStr}`);
+      const today = new Date().toISOString().split('T')[0];
+      
+      // Si c'est la date du jour → données temps réel
+      if (dateStr === today) {
+        return await this.getF1F2Live(dateStr);
+      }
+      
+      // Sinon → snapshot historique
+      console.log(`📊 [F1F2 SNAPSHOT] ${dateStr}`);
       const supervisors = await this.getSupervisors();
-      const targetDate  = new Date(dateStr);
+      const targetDate = new Date(dateStr);
       targetDate.setHours(0, 0, 0, 0);
 
       let totalF1 = 0, totalF2 = 0;
@@ -68,7 +213,7 @@ class CumulService {
         }
 
         let supF1 = 0, supF2 = 0;
-        const sortie   = snapshot.comptes?.sortie   || {};
+        const sortie = snapshot.comptes?.sortie || {};
         const sortieF2 = snapshot.comptes?.sortieF2 || {};
 
         for (const [type, val] of Object.entries(sortie)) {
@@ -106,14 +251,7 @@ class CumulService {
   // F1 / F2 — CUMUL SUR UNE PLAGE DE DATES
   // ══════════════════════════════════════════════════════════════════════════
 
-  /**
-   * Cumul F1/F2 sur une plage startDateStr → endDateStr.
-   * Si startDateStr === endDateStr, délègue à getF1F2ByDate (optimisation).
-   * @param {string} startDateStr  YYYY-MM-DD
-   * @param {string} endDateStr    YYYY-MM-DD
-   */
   async getCumulF1F2(startDateStr, endDateStr) {
-    // Cas date unique
     if (startDateStr === endDateStr) return this.getF1F2ByDate(startDateStr);
 
     try {
@@ -148,7 +286,7 @@ class CumulService {
           }
 
           let supF1 = 0, supF2 = 0;
-          const sortie   = snapshot.comptes?.sortie   || {};
+          const sortie = snapshot.comptes?.sortie || {};
           const sortieF2 = snapshot.comptes?.sortieF2 || {};
 
           for (const [type, val] of Object.entries(sortie)) {
@@ -163,15 +301,15 @@ class CumulService {
           dayF2 += supF2;
           detailSups.push({ id: sup.id, nom: sup.nomComplet, f1: supF1, f2: supF2, diff: supDiff, hasData: true });
 
-          parSuperviseur[sup.id].cumulF1   += supF1;
-          parSuperviseur[sup.id].cumulF2   += supF2;
+          parSuperviseur[sup.id].cumulF1 += supF1;
+          parSuperviseur[sup.id].cumulF2 += supF2;
           parSuperviseur[sup.id].cumulDiff += supDiff;
           if (supF1 > 0 || supF2 > 0) parSuperviseur[sup.id].jours++;
         }
 
         const dayDiff = dayF2 - dayF1;
-        grandF1   += dayF1;
-        grandF2   += dayF2;
+        grandF1 += dayF1;
+        grandF2 += dayF2;
         grandDiff += dayDiff;
 
         parJour.push({
@@ -201,15 +339,19 @@ class CumulService {
   // INTERNATIONAL — SNAPSHOT D'UNE DATE UNIQUE
   // ══════════════════════════════════════════════════════════════════════════
 
-  /**
-   * Retourne WU / RIA / MoneyGram pour une seule journée.
-   * @param {string} dateStr  YYYY-MM-DD
-   */
   async getInternationalByDate(dateStr) {
     try {
-      console.log(`🌍 [INTL DATE] ${dateStr}`);
+      const today = new Date().toISOString().split('T')[0];
+      
+      // Si c'est la date du jour → données temps réel
+      if (dateStr === today) {
+        return await this.getInternationalLive(dateStr);
+      }
+      
+      // Sinon → snapshot historique
+      console.log(`🌍 [INTL SNAPSHOT] ${dateStr}`);
       const supervisors = await this.getSupervisors();
-      const targetDate  = new Date(dateStr);
+      const targetDate = new Date(dateStr);
       targetDate.setHours(0, 0, 0, 0);
 
       const totauxParOp = {};
@@ -223,17 +365,17 @@ class CumulService {
         INTERNATIONAL_TYPES.forEach(t => { ops[t] = { debut: 0, fin: 0, gr: 0 }; });
 
         if (snapshot) {
-          const debut  = snapshot.comptes?.debut  || {};
+          const debut = snapshot.comptes?.debut || {};
           const sortie = snapshot.comptes?.sortie || {};
 
           for (const type of INTERNATIONAL_TYPES) {
-            const d = debut[type]  || 0;
+            const d = debut[type] || 0;
             const f = sortie[type] || 0;
             const g = d - f;
             ops[type] = { debut: d, fin: f, gr: g };
             totauxParOp[type].debut += d;
-            totauxParOp[type].fin   += f;
-            totauxParOp[type].gr    += g;
+            totauxParOp[type].fin += f;
+            totauxParOp[type].gr += g;
           }
         }
 
@@ -265,10 +407,6 @@ class CumulService {
   // INTERNATIONAL — CUMUL SUR UNE PLAGE DE DATES
   // ══════════════════════════════════════════════════════════════════════════
 
-  /**
-   * Cumul WU / RIA / MoneyGram sur une plage.
-   * Si startDateStr === endDateStr, délègue à getInternationalByDate.
-   */
   async getCumulInternational(startDateStr, endDateStr) {
     if (startDateStr === endDateStr) return this.getInternationalByDate(startDateStr);
 
@@ -299,25 +437,25 @@ class CumulService {
           const snapshot = await TransactionService.getSnapshotForDate(sup.id, targetDate);
           if (!snapshot) continue;
 
-          const debut  = snapshot.comptes?.debut  || {};
+          const debut = snapshot.comptes?.debut || {};
           const sortie = snapshot.comptes?.sortie || {};
 
           for (const type of INTERNATIONAL_TYPES) {
-            const d = debut[type]  || 0;
+            const d = debut[type] || 0;
             const f = sortie[type] || 0;
             const g = d - f;
 
             dayOps[type].debut += d;
-            dayOps[type].fin   += f;
-            dayOps[type].gr    += g;
+            dayOps[type].fin += f;
+            dayOps[type].gr += g;
 
             totauxParOp[type].debut += d;
-            totauxParOp[type].fin   += f;
-            totauxParOp[type].gr    += g;
+            totauxParOp[type].fin += f;
+            totauxParOp[type].gr += g;
 
             parSuperviseur[sup.id].ops[type].debut += d;
-            parSuperviseur[sup.id].ops[type].fin   += f;
-            parSuperviseur[sup.id].ops[type].gr    += g;
+            parSuperviseur[sup.id].ops[type].fin += f;
+            parSuperviseur[sup.id].ops[type].gr += g;
 
             if (d > 0 || f > 0) dayHasData = true;
           }
@@ -367,13 +505,11 @@ class CumulService {
   // PRESETS
   // ══════════════════════════════════════════════════════════════════════════
 
-  /** Presets F1F2 : '2j' | '3j' | '1m' | '1an' */
   async getCumulF1F2ByPreset(preset) {
     const { startDate, endDate } = this._presetToDates(preset, { '2j':2,'3j':3,'1m':30,'1an':365 });
     return this.getCumulF1F2(startDate, endDate);
   }
 
-  /** Presets international : '1m' | '3m' | '6m' | '1an' */
   async getCumulInternationalByPreset(preset) {
     const { startDate, endDate } = this._presetToDates(preset, { '1m':30,'3m':90,'6m':180,'1an':365 });
     return this.getCumulInternational(startDate, endDate);
@@ -382,11 +518,11 @@ class CumulService {
   _presetToDates(preset, map) {
     const daysBack = map[preset] ?? 30;
     const today = new Date(); today.setHours(0,0,0,0);
-    const end   = new Date(today); end.setDate(today.getDate() - 1);
+    const end = new Date(today); end.setDate(today.getDate() - 1);
     const start = new Date(today); start.setDate(today.getDate() - daysBack);
     return {
       startDate: start.toISOString().split('T')[0],
-      endDate:   end.toISOString().split('T')[0]
+      endDate: end.toISOString().split('T')[0]
     };
   }
 
@@ -394,8 +530,6 @@ class CumulService {
   // ENDPOINT COMBINÉ
   // ══════════════════════════════════════════════════════════════════════════
 
-  /** F1F2 + International en un seul appel.
-   *  Si une seule date → passe la même date en start ET end. */
   async getFullCumul(startDateStr, endDateStr) {
     const end = endDateStr ?? startDateStr;
     const [f1f2, intl] = await Promise.all([

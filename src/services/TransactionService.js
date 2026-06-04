@@ -2226,6 +2226,160 @@ class TransactionService {
       };
     } catch (error) { return { error: error.message }; }
   }
+  // Ajoutez à la fin de TransactionService.js (avant le export default)
+
+// ══════════════════════════════════════════════════════════════════════════
+// DONNÉES EN TEMPS RÉEL (SANS SNAPSHOT)
+// ══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Récupère les F1/F2 en temps réel (données actuelles des comptes)
+ * @param {string} dateStr - Date (utilisée pour la cohérence, mais on prend les comptes actuels)
+ */
+async getF1F2Live(dateStr) {
+  try {
+    console.log(`📊 [F1F2 LIVE] Données en temps réel`);
+    
+    const supervisors = await this.getActiveSupervisors();
+    
+    let totalF1 = 0, totalF2 = 0;
+    const detailSups = [];
+
+    for (const sup of supervisors) {
+      // Récupérer les comptes actuels du superviseur
+      const accounts = await prisma.account.findMany({
+        where: { userId: sup.id },
+        select: { type: true, balance: true, finSecondaire: true }
+      });
+
+      let supF1 = 0, supF2 = 0;
+      
+      for (const account of accounts) {
+        // F1 = balance (solde de fin actuel)
+        const f1 = this.convertFromInt(account.balance || 0);
+        // F2 = finSecondaire
+        const f2 = this.convertFromInt(account.finSecondaire || 0);
+        
+        // Ne pas compter les comptes partenaires (commencent par part-)
+        if (!account.type.startsWith('part-')) {
+          supF1 += f1;
+          supF2 += f2;
+        }
+      }
+      
+      totalF1 += supF1;
+      totalF2 += supF2;
+      
+      detailSups.push({
+        id: sup.id,
+        nom: sup.nomComplet,
+        f1: supF1,
+        f2: supF2,
+        diff: supF2 - supF1,
+        hasData: (supF1 > 0 || supF2 > 0)
+      });
+    }
+
+    return {
+      success: true,
+      mode: 'date_unique',
+      date: dateStr,
+      dateDisplay: this.formatDateForDisplay(dateStr).long,
+      totaux: { f1: totalF1, f2: totalF2, diff: totalF2 - totalF1 },
+      parSuperviseur: detailSups.sort((a, b) => b.diff - a.diff),
+      isLiveData: true  // Indique que ce sont des données en temps réel
+    };
+
+  } catch (error) {
+    console.error('❌ [F1F2 LIVE] Erreur:', error);
+    throw error;
+  }
+}
+
+/**
+ * Récupère les transferts internationaux en temps réel
+ */
+async getInternationalLive(dateStr) {
+  try {
+    console.log(`🌍 [INTL LIVE] Données en temps réel`);
+    
+    const supervisors = await this.getActiveSupervisors();
+    
+    const totauxParOp = {
+      WESTERN_UNION: { debut: 0, fin: 0, gr: 0 },
+      RIA: { debut: 0, fin: 0, gr: 0 },
+      MONEYGRAM: { debut: 0, fin: 0, gr: 0 }
+    };
+    
+    const detailSups = [];
+
+    for (const sup of supervisors) {
+      const accounts = await prisma.account.findMany({
+        where: { userId: sup.id },
+        select: { type: true, balance: true, initialBalance: true }
+      });
+      
+      const ops = {
+        WESTERN_UNION: { debut: 0, fin: 0, gr: 0 },
+        RIA: { debut: 0, fin: 0, gr: 0 },
+        MONEYGRAM: { debut: 0, fin: 0, gr: 0 }
+      };
+      
+      for (const account of accounts) {
+        const type = account.type;
+        if (totauxParOp[type]) {
+          const debut = this.convertFromInt(account.initialBalance || 0);
+          const fin = this.convertFromInt(account.balance || 0);
+          const gr = debut - fin;
+          
+          ops[type].debut += debut;
+          ops[type].fin += fin;
+          ops[type].gr += gr;
+          
+          totauxParOp[type].debut += debut;
+          totauxParOp[type].fin += fin;
+          totauxParOp[type].gr += gr;
+        }
+      }
+      
+      detailSups.push({
+        id: sup.id,
+        nom: sup.nomComplet,
+        ops,
+        hasData: Object.values(ops).some(o => o.debut > 0 || o.fin > 0)
+      });
+    }
+    
+    const totalGlobal = {
+      debut: totauxParOp.WESTERN_UNION.debut + totauxParOp.RIA.debut + totauxParOp.MONEYGRAM.debut,
+      fin: totauxParOp.WESTERN_UNION.fin + totauxParOp.RIA.fin + totauxParOp.MONEYGRAM.fin,
+      gr: totauxParOp.WESTERN_UNION.gr + totauxParOp.RIA.gr + totauxParOp.MONEYGRAM.gr
+    };
+
+    return {
+      success: true,
+      mode: 'date_unique',
+      date: dateStr,
+      dateDisplay: this.formatDateForDisplay(dateStr).long,
+      totauxParOperateur: totauxParOp,
+      totalGlobal,
+      parSuperviseur: detailSups.filter(s => s.hasData),
+      isLiveData: true
+    };
+
+  } catch (error) {
+    console.error('❌ [INTL LIVE] Erreur:', error);
+    throw error;
+  }
+}
+
+async getActiveSupervisors() {
+  return prisma.user.findMany({
+    where: { role: 'SUPERVISEUR', status: 'ACTIVE' },
+    select: { id: true, nomComplet: true, telephone: true },
+    orderBy: { nomComplet: 'asc' }
+  });
+}
 }
 
 export default new TransactionService();
