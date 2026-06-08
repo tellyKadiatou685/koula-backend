@@ -1,6 +1,5 @@
 // src/services/CumulService.js
 import prisma from '../config/database.js';
-import TransactionService from './TransactionService.js';
 
 const INTERNATIONAL_TYPES = ['WESTERN_UNION', 'RIA', 'MONEYGRAM'];
 
@@ -24,7 +23,8 @@ class CumulService {
   }
 
   convertFromInt(value) { return Number(value) / 100; }
-  fmt(n) { return Math.abs(n).toLocaleString('fr-FR') + '\u202FF'; }
+
+  convertToInt(value) { return Math.round(parseFloat(value) * 100); }
 
   async getSupervisors() {
     return prisma.user.findMany({
@@ -39,143 +39,159 @@ class CumulService {
     });
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // DONNÉES EN TEMPS RÉEL (POUR LA DATE DU JOUR)
-  // ══════════════════════════════════════════════════════════════════════════
-
-  /**
-   * Récupère les F1/F2 en temps réel depuis les comptes actuels
-   */
-  async getF1F2Live(dateStr) {
-    try {
-      console.log(`📊 [F1F2 LIVE] Données temps réel pour ${dateStr}`);
-      
-      const supervisors = await this.getSupervisors();
-      let totalF1 = 0, totalF2 = 0;
-      const detailSups = [];
-
-      for (const sup of supervisors) {
-        const accounts = await prisma.account.findMany({
-          where: { userId: sup.id },
-          select: { type: true, balance: true, finSecondaire: true }
-        });
-
-        let supF1 = 0, supF2 = 0;
-        
-        for (const account of accounts) {
-          const f1 = this.convertFromInt(account.balance || 0);
-          const f2 = this.convertFromInt(account.finSecondaire || 0);
-          
-          // Ignorer les comptes partenaires
-          if (!account.type.startsWith('part-') && !account.type.startsWith('sup-')) {
-            supF1 += f1;
-            supF2 += f2;
-          }
-        }
-        
-        totalF1 += supF1;
-        totalF2 += supF2;
-        
-        detailSups.push({
-          id: sup.id,
-          nom: sup.nomComplet,
-          f1: supF1,
-          f2: supF2,
-          diff: supF2 - supF1,
-          hasData: (supF1 > 0 || supF2 > 0)
-        });
+  // Extrait F1/F2 international depuis un snapshot brut (champs séparés)
+  extractInternationalFromSnapshot(snapshot) {
+    return {
+      WESTERN_UNION: {
+        f1:    this.convertFromInt(snapshot.westernUnionFin   || 0),
+        f2:    0,
+        debut: this.convertFromInt(snapshot.westernUnionDebut || 0)
+      },
+      RIA: {
+        f1:    this.convertFromInt(snapshot.riaFin   || 0),
+        f2:    0,
+        debut: this.convertFromInt(snapshot.riaDebut || 0)
+      },
+      MONEYGRAM: {
+        f1:    this.convertFromInt(snapshot.moneygramFin   || 0),
+        f2:    0,
+        debut: this.convertFromInt(snapshot.moneygramDebut || 0)
       }
-
-      return {
-        success: true,
-        mode: 'date_unique',
-        date: dateStr,
-        dateDisplay: this.formatDate(dateStr) + ' (temps réel)',
-        totaux: { f1: totalF1, f2: totalF2, diff: totalF2 - totalF1 },
-        parSuperviseur: detailSups.sort((a, b) => b.diff - a.diff),
-        isLiveData: true
-      };
-
-    } catch (error) {
-      console.error('❌ [F1F2 LIVE] Erreur:', error);
-      throw error;
-    }
+    };
   }
 
-  /**
-   * Récupère les transferts internationaux en temps réel
-   */
+  // ══════════════════════════════════════════════════════════════════════════
+  // HELPER : charger tous les snapshots d'une plage en UNE requête
+  // ══════════════════════════════════════════════════════════════════════════
+
+  async loadAllSnapshots(supervisorIds, startDateStr, endDateStr) {
+    const startDate = new Date(startDateStr);
+    startDate.setHours(0, 0, 0, 0);
+    const endDate = new Date(endDateStr);
+    endDate.setHours(23, 59, 59, 999);
+
+    const snapshots = await prisma.dailySnapshot.findMany({
+      where: {
+        userId: { in: supervisorIds },
+        date:   { gte: startDate, lte: endDate }
+      },
+      select: {
+        userId: true, date: true,
+        westernUnionDebut: true, westernUnionFin: true,
+        riaDebut: true, riaFin: true,
+        moneygramDebut: true, moneygramFin: true,
+        liquideDebut: true, liquideFin: true,
+        orangeMoneyDebut: true, orangeMoneyFin: true,
+        waveDebut: true, waveFin: true,
+        uvMasterDebut: true, uvMasterFin: true,
+        autresDebut: true, autresFin: true,
+        freeMoneyDebut: true, freeMoneyFin: true,
+        debutTotal: true, sortieTotal: true, grTotal: true
+      }
+    });
+
+    const f2Keys = [];
+    for (const snap of snapshots) {
+      const dateStr = snap.date.toISOString().split('T')[0];
+      f2Keys.push(`snapshot_f2_${snap.userId}_${dateStr}`);
+    }
+
+    let f2Index = {};
+    if (f2Keys.length > 0) {
+      const f2Configs = await prisma.systemConfig.findMany({
+        where:  { key: { in: f2Keys } },
+        select: { key: true, value: true }
+      });
+      f2Configs.forEach(cfg => {
+        try { f2Index[cfg.key] = JSON.parse(cfg.value); } catch { f2Index[cfg.key] = {}; }
+      });
+    }
+
+    const index = {};
+    for (const snap of snapshots) {
+      const dateStr = snap.date.toISOString().split('T')[0];
+      const key     = `${dateStr}_${snap.userId}`;
+      const f2Data  = f2Index[`snapshot_f2_${snap.userId}_${dateStr}`] || {};
+      index[key]    = { snap, f2Data };
+    }
+
+    console.log(`✅ [SNAPSHOT LOAD] ${snapshots.length} snapshots + ${Object.keys(f2Index).length} F2 chargés en 2 requêtes DB`);
+    return index;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // DONNÉES EN TEMPS RÉEL (aujourd'hui)
+  // ══════════════════════════════════════════════════════════════════════════
+
   async getInternationalLive(dateStr) {
     try {
       console.log(`🌍 [INTL LIVE] Données temps réel pour ${dateStr}`);
-      
       const supervisors = await this.getSupervisors();
-      
+
       const totauxParOp = {
-        WESTERN_UNION: { debut: 0, fin: 0, gr: 0 },
-        RIA: { debut: 0, fin: 0, gr: 0 },
-        MONEYGRAM: { debut: 0, fin: 0, gr: 0 }
+        WESTERN_UNION: { f1: 0, f2: 0, diff: 0 },
+        RIA:           { f1: 0, f2: 0, diff: 0 },
+        MONEYGRAM:     { f1: 0, f2: 0, diff: 0 }
       };
-      
       const detailSups = [];
 
-      for (const sup of supervisors) {
-        const accounts = await prisma.account.findMany({
-          where: { userId: sup.id },
-          select: { type: true, balance: true, initialBalance: true }
-        });
-        
+      const allAccounts = await Promise.all(
+        supervisors.map(sup =>
+          prisma.account.findMany({
+            where:  { userId: sup.id },
+            select: { type: true, balance: true, finSecondaire: true }
+          }).then(accounts => ({ sup, accounts }))
+        )
+      );
+
+      for (const { sup, accounts } of allAccounts) {
         const ops = {
-          WESTERN_UNION: { debut: 0, fin: 0, gr: 0 },
-          RIA: { debut: 0, fin: 0, gr: 0 },
-          MONEYGRAM: { debut: 0, fin: 0, gr: 0 }
+          WESTERN_UNION: { f1: 0, f2: 0, diff: 0 },
+          RIA:           { f1: 0, f2: 0, diff: 0 },
+          MONEYGRAM:     { f1: 0, f2: 0, diff: 0 }
         };
-        
+
         for (const account of accounts) {
-          const type = account.type;
-          if (totauxParOp[type]) {
-            const debut = this.convertFromInt(account.initialBalance || 0);
-            const fin = this.convertFromInt(account.balance || 0);
-            const gr = debut - fin;
-            
-            ops[type].debut += debut;
-            ops[type].fin += fin;
-            ops[type].gr += gr;
-            
-            totauxParOp[type].debut += debut;
-            totauxParOp[type].fin += fin;
-            totauxParOp[type].gr += gr;
+          if (totauxParOp[account.type]) {
+            const f1   = this.convertFromInt(account.balance       || 0);
+            const f2   = this.convertFromInt(account.finSecondaire || 0);
+            const diff = f2 - f1;
+
+            ops[account.type].f1   += f1;
+            ops[account.type].f2   += f2;
+            ops[account.type].diff += diff;
+
+            totauxParOp[account.type].f1   += f1;
+            totauxParOp[account.type].f2   += f2;
+            totauxParOp[account.type].diff += diff;
           }
         }
-        
-        const aDesDonnees = Object.values(ops).some(o => o.debut > 0 || o.fin > 0);
+
+        const aDesDonnees = Object.values(ops).some(o => o.f1 > 0 || o.f2 > 0);
         if (aDesDonnees) {
-          detailSups.push({
-            id: sup.id,
-            nom: sup.nomComplet,
-            ops,
-            hasData: true
-          });
+          detailSups.push({ id: sup.id, nom: sup.nomComplet, ops, hasData: true });
         }
       }
-      
-      const totalGlobal = {
-        debut: totauxParOp.WESTERN_UNION.debut + totauxParOp.RIA.debut + totauxParOp.MONEYGRAM.debut,
-        fin: totauxParOp.WESTERN_UNION.fin + totauxParOp.RIA.fin + totauxParOp.MONEYGRAM.fin,
-        gr: totauxParOp.WESTERN_UNION.gr + totauxParOp.RIA.gr + totauxParOp.MONEYGRAM.gr
-      };
+
+      const totalGlobal = INTERNATIONAL_TYPES.reduce(
+        (acc, t) => ({
+          f1:   acc.f1   + totauxParOp[t].f1,
+          f2:   acc.f2   + totauxParOp[t].f2,
+          diff: acc.diff + totauxParOp[t].diff
+        }),
+        { f1: 0, f2: 0, diff: 0 }
+      );
 
       return {
-        success: true,
-        mode: 'date_unique',
-        date: dateStr,
-        dateDisplay: this.formatDate(dateStr) + ' (temps réel)',
+        success:          true,
+        mode:             'date_unique',
+        date:             dateStr,
+        dateDisplay:      this.formatDate(dateStr) + ' (temps réel)',
         totauxParOperateur: totauxParOp,
-        totalGlobal,
-        parSuperviseur: detailSups,
-        isLiveData: true
+        totalGlobal:      { ...totalGlobal, cumulativeTotal: totalGlobal.diff },
+        parSuperviseur:   detailSups,
+        isLiveData:       true
       };
-
     } catch (error) {
       console.error('❌ [INTL LIVE] Erreur:', error);
       throw error;
@@ -183,220 +199,68 @@ class CumulService {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // F1 / F2 — SNAPSHOT D'UNE DATE UNIQUE
-  // ══════════════════════════════════════════════════════════════════════════
-
-  async getF1F2ByDate(dateStr) {
-    try {
-      const today = new Date().toISOString().split('T')[0];
-      
-      // Si c'est la date du jour → données temps réel
-      if (dateStr === today) {
-        return await this.getF1F2Live(dateStr);
-      }
-      
-      // Sinon → snapshot historique
-      console.log(`📊 [F1F2 SNAPSHOT] ${dateStr}`);
-      const supervisors = await this.getSupervisors();
-      const targetDate = new Date(dateStr);
-      targetDate.setHours(0, 0, 0, 0);
-
-      let totalF1 = 0, totalF2 = 0;
-      const detailSups = [];
-
-      for (const sup of supervisors) {
-        const snapshot = await TransactionService.getSnapshotForDate(sup.id, targetDate);
-
-        if (!snapshot) {
-          detailSups.push({ id: sup.id, nom: sup.nomComplet, f1: 0, f2: 0, diff: 0, hasData: false });
-          continue;
-        }
-
-        let supF1 = 0, supF2 = 0;
-        const sortie = snapshot.comptes?.sortie || {};
-        const sortieF2 = snapshot.comptes?.sortieF2 || {};
-
-        for (const [type, val] of Object.entries(sortie)) {
-          if (!type.startsWith('part-')) supF1 += (val || 0);
-        }
-        for (const [type, val] of Object.entries(sortieF2)) {
-          if (!type.startsWith('part-')) supF2 += (val || 0);
-        }
-
-        totalF1 += supF1;
-        totalF2 += supF2;
-        detailSups.push({
-          id: sup.id, nom: sup.nomComplet,
-          f1: supF1, f2: supF2, diff: supF2 - supF1,
-          hasData: true
-        });
-      }
-
-      return {
-        success: true,
-        mode: 'date_unique',
-        date: dateStr,
-        dateDisplay: this.formatDate(dateStr),
-        totaux: { f1: totalF1, f2: totalF2, diff: totalF2 - totalF1 },
-        parSuperviseur: detailSups.sort((a, b) => b.diff - a.diff)
-      };
-
-    } catch (error) {
-      console.error('❌ [F1F2 DATE] Erreur:', error);
-      throw error;
-    }
-  }
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // F1 / F2 — CUMUL SUR UNE PLAGE DE DATES
-  // ══════════════════════════════════════════════════════════════════════════
-
-  async getCumulF1F2(startDateStr, endDateStr) {
-    if (startDateStr === endDateStr) return this.getF1F2ByDate(startDateStr);
-
-    try {
-      console.log(`📊 [CUMUL F1F2] ${startDateStr} → ${endDateStr}`);
-      const supervisors = await this.getSupervisors();
-      const dates = this.generateDateRange(startDateStr, endDateStr);
-
-      let grandF1 = 0, grandF2 = 0, grandDiff = 0;
-      const parJour = [];
-      const parSuperviseur = {};
-
-      supervisors.forEach(sup => {
-        parSuperviseur[sup.id] = {
-          id: sup.id, nom: sup.nomComplet,
-          cumulF1: 0, cumulF2: 0, cumulDiff: 0, jours: 0
-        };
-      });
-
-      for (const dateStr of dates) {
-        const targetDate = new Date(dateStr);
-        targetDate.setHours(0, 0, 0, 0);
-
-        let dayF1 = 0, dayF2 = 0;
-        const detailSups = [];
-
-        for (const sup of supervisors) {
-          const snapshot = await TransactionService.getSnapshotForDate(sup.id, targetDate);
-
-          if (!snapshot) {
-            detailSups.push({ id: sup.id, nom: sup.nomComplet, f1: 0, f2: 0, diff: 0, hasData: false });
-            continue;
-          }
-
-          let supF1 = 0, supF2 = 0;
-          const sortie = snapshot.comptes?.sortie || {};
-          const sortieF2 = snapshot.comptes?.sortieF2 || {};
-
-          for (const [type, val] of Object.entries(sortie)) {
-            if (!type.startsWith('part-')) supF1 += (val || 0);
-          }
-          for (const [type, val] of Object.entries(sortieF2)) {
-            if (!type.startsWith('part-')) supF2 += (val || 0);
-          }
-
-          const supDiff = supF2 - supF1;
-          dayF1 += supF1;
-          dayF2 += supF2;
-          detailSups.push({ id: sup.id, nom: sup.nomComplet, f1: supF1, f2: supF2, diff: supDiff, hasData: true });
-
-          parSuperviseur[sup.id].cumulF1 += supF1;
-          parSuperviseur[sup.id].cumulF2 += supF2;
-          parSuperviseur[sup.id].cumulDiff += supDiff;
-          if (supF1 > 0 || supF2 > 0) parSuperviseur[sup.id].jours++;
-        }
-
-        const dayDiff = dayF2 - dayF1;
-        grandF1 += dayF1;
-        grandF2 += dayF2;
-        grandDiff += dayDiff;
-
-        parJour.push({
-          date: dateStr,
-          dateDisplay: this.formatDate(dateStr),
-          f1: dayF1, f2: dayF2, diff: dayDiff,
-          superviseurs: detailSups
-        });
-      }
-
-      return {
-        success: true,
-        mode: 'plage',
-        plage: { debut: startDateStr, fin: endDateStr, nombreJours: dates.length },
-        totaux: { cumulF1: grandF1, cumulF2: grandF2, cumulDiff: grandDiff },
-        parJour,
-        parSuperviseur: Object.values(parSuperviseur).sort((a, b) => b.cumulDiff - a.cumulDiff)
-      };
-
-    } catch (error) {
-      console.error('❌ [CUMUL F1F2] Erreur:', error);
-      throw error;
-    }
-  }
-
-  // ══════════════════════════════════════════════════════════════════════════
-  // INTERNATIONAL — SNAPSHOT D'UNE DATE UNIQUE
+  // INTERNATIONAL — SNAPSHOT DATE UNIQUE
   // ══════════════════════════════════════════════════════════════════════════
 
   async getInternationalByDate(dateStr) {
     try {
       const today = new Date().toISOString().split('T')[0];
-      
-      // Si c'est la date du jour → données temps réel
-      if (dateStr === today) {
-        return await this.getInternationalLive(dateStr);
-      }
-      
-      // Sinon → snapshot historique
+      if (dateStr === today) return this.getInternationalLive(dateStr);
+
       console.log(`🌍 [INTL SNAPSHOT] ${dateStr}`);
       const supervisors = await this.getSupervisors();
-      const targetDate = new Date(dateStr);
-      targetDate.setHours(0, 0, 0, 0);
+
+      const snapshotIndex = await this.loadAllSnapshots(
+        supervisors.map(s => s.id), dateStr, dateStr
+      );
 
       const totauxParOp = {};
-      INTERNATIONAL_TYPES.forEach(t => { totauxParOp[t] = { debut: 0, fin: 0, gr: 0 }; });
-
+      INTERNATIONAL_TYPES.forEach(t => { totauxParOp[t] = { f1: 0, f2: 0, diff: 0 }; });
       const detailSups = [];
 
       for (const sup of supervisors) {
-        const snapshot = await TransactionService.getSnapshotForDate(sup.id, targetDate);
-        const ops = {};
-        INTERNATIONAL_TYPES.forEach(t => { ops[t] = { debut: 0, fin: 0, gr: 0 }; });
+        const entry = snapshotIndex[`${dateStr}_${sup.id}`];
+        const ops   = {};
+        INTERNATIONAL_TYPES.forEach(t => { ops[t] = { f1: 0, f2: 0, diff: 0 }; });
 
-        if (snapshot) {
-          const debut = snapshot.comptes?.debut || {};
-          const sortie = snapshot.comptes?.sortie || {};
+        if (entry) {
+          const { snap, f2Data } = entry;
+          const raw = this.extractInternationalFromSnapshot(snap);
 
           for (const type of INTERNATIONAL_TYPES) {
-            const d = debut[type] || 0;
-            const f = sortie[type] || 0;
-            const g = d - f;
-            ops[type] = { debut: d, fin: f, gr: g };
-            totauxParOp[type].debut += d;
-            totauxParOp[type].fin += f;
-            totauxParOp[type].gr += g;
+            const f1    = raw[type].f1;
+            const f2Raw = f2Data[type];
+            const f2    = f2Raw !== undefined ? this.convertFromInt(BigInt(f2Raw)) : 0;
+            const diff  = f2 - f1;
+
+            ops[type] = { f1, f2, diff };
+            totauxParOp[type].f1   += f1;
+            totauxParOp[type].f2   += f2;
+            totauxParOp[type].diff += diff;
           }
         }
 
-        detailSups.push({ id: sup.id, nom: sup.nomComplet, ops, hasData: !!snapshot });
+        detailSups.push({ id: sup.id, nom: sup.nomComplet, ops, hasData: !!entry });
       }
 
       const totalGlobal = INTERNATIONAL_TYPES.reduce(
-        (acc, t) => ({ debut: acc.debut + totauxParOp[t].debut, fin: acc.fin + totauxParOp[t].fin, gr: acc.gr + totauxParOp[t].gr }),
-        { debut: 0, fin: 0, gr: 0 }
+        (acc, t) => ({
+          f1:   acc.f1   + totauxParOp[t].f1,
+          f2:   acc.f2   + totauxParOp[t].f2,
+          diff: acc.diff + totauxParOp[t].diff
+        }),
+        { f1: 0, f2: 0, diff: 0 }
       );
 
       return {
-        success: true,
-        mode: 'date_unique',
-        date: dateStr,
-        dateDisplay: this.formatDate(dateStr),
+        success:            true,
+        mode:               'date_unique',
+        date:               dateStr,
+        dateDisplay:        this.formatDate(dateStr),
         totauxParOperateur: totauxParOp,
-        totalGlobal,
-        parSuperviseur: detailSups
+        totalGlobal:        { ...totalGlobal, cumulativeTotal: totalGlobal.diff },
+        parSuperviseur:     detailSups
       };
-
     } catch (error) {
       console.error('❌ [INTL DATE] Erreur:', error);
       throw error;
@@ -404,7 +268,7 @@ class CumulService {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // INTERNATIONAL — CUMUL SUR UNE PLAGE DE DATES
+  // INTERNATIONAL — CUMUL PLAGE (OPTIMISÉ : 2 requêtes DB au total)
   // ══════════════════════════════════════════════════════════════════════════
 
   async getCumulInternational(startDateStr, endDateStr) {
@@ -413,90 +277,266 @@ class CumulService {
     try {
       console.log(`🌍 [CUMUL INTL] ${startDateStr} → ${endDateStr}`);
       const supervisors = await this.getSupervisors();
-      const dates = this.generateDateRange(startDateStr, endDateStr);
+      const dates       = this.generateDateRange(startDateStr, endDateStr);
+
+      const snapshotIndex = await this.loadAllSnapshots(
+        supervisors.map(s => s.id), startDateStr, endDateStr
+      );
 
       const totauxParOp = {};
-      INTERNATIONAL_TYPES.forEach(t => { totauxParOp[t] = { debut: 0, fin: 0, gr: 0 }; });
+      INTERNATIONAL_TYPES.forEach(t => { totauxParOp[t] = { f1: 0, f2: 0, diff: 0 }; });
 
-      const parJour = [];
+      let cumulativeDiffTotal = 0;
+      const parJour        = [];
       const parSuperviseur = {};
+
       supervisors.forEach(sup => {
-        parSuperviseur[sup.id] = { id: sup.id, nom: sup.nomComplet, ops: {} };
-        INTERNATIONAL_TYPES.forEach(t => { parSuperviseur[sup.id].ops[t] = { debut: 0, fin: 0, gr: 0 }; });
+        parSuperviseur[sup.id] = { id: sup.id, nom: sup.nomComplet, ops: {}, cumulativeDiff: 0 };
+        INTERNATIONAL_TYPES.forEach(t => { parSuperviseur[sup.id].ops[t] = { f1: 0, f2: 0, diff: 0 }; });
       });
 
       for (const dateStr of dates) {
-        const targetDate = new Date(dateStr);
-        targetDate.setHours(0, 0, 0, 0);
-
         const dayOps = {};
-        INTERNATIONAL_TYPES.forEach(t => { dayOps[t] = { debut: 0, fin: 0, gr: 0 }; });
+        INTERNATIONAL_TYPES.forEach(t => { dayOps[t] = { f1: 0, f2: 0, diff: 0 }; });
         let dayHasData = false;
 
         for (const sup of supervisors) {
-          const snapshot = await TransactionService.getSnapshotForDate(sup.id, targetDate);
-          if (!snapshot) continue;
+          const entry = snapshotIndex[`${dateStr}_${sup.id}`];
+          if (!entry) continue;
 
-          const debut = snapshot.comptes?.debut || {};
-          const sortie = snapshot.comptes?.sortie || {};
+          const { snap, f2Data } = entry;
+          const raw = this.extractInternationalFromSnapshot(snap);
 
           for (const type of INTERNATIONAL_TYPES) {
-            const d = debut[type] || 0;
-            const f = sortie[type] || 0;
-            const g = d - f;
+            const f1    = raw[type].f1;
+            const f2Raw = f2Data[type];
+            const f2    = f2Raw !== undefined ? this.convertFromInt(BigInt(f2Raw)) : 0;
+            const diff  = f2 - f1;
 
-            dayOps[type].debut += d;
-            dayOps[type].fin += f;
-            dayOps[type].gr += g;
+            dayOps[type].f1   += f1;
+            dayOps[type].f2   += f2;
+            dayOps[type].diff += diff;
 
-            totauxParOp[type].debut += d;
-            totauxParOp[type].fin += f;
-            totauxParOp[type].gr += g;
+            totauxParOp[type].f1   += f1;
+            totauxParOp[type].f2   += f2;
+            totauxParOp[type].diff += diff;
 
-            parSuperviseur[sup.id].ops[type].debut += d;
-            parSuperviseur[sup.id].ops[type].fin += f;
-            parSuperviseur[sup.id].ops[type].gr += g;
+            parSuperviseur[sup.id].ops[type].f1   += f1;
+            parSuperviseur[sup.id].ops[type].f2   += f2;
+            parSuperviseur[sup.id].ops[type].diff += diff;
 
-            if (d > 0 || f > 0) dayHasData = true;
+            if (f1 > 0 || f2 > 0) dayHasData = true;
           }
         }
 
         if (dayHasData) {
           const totalJour = INTERNATIONAL_TYPES.reduce(
-            (acc, t) => ({ debut: acc.debut + dayOps[t].debut, fin: acc.fin + dayOps[t].fin, gr: acc.gr + dayOps[t].gr }),
-            { debut: 0, fin: 0, gr: 0 }
+            (acc, t) => ({
+              f1:   acc.f1   + dayOps[t].f1,
+              f2:   acc.f2   + dayOps[t].f2,
+              diff: acc.diff + dayOps[t].diff
+            }),
+            { f1: 0, f2: 0, diff: 0 }
           );
+
+          cumulativeDiffTotal += totalJour.diff;
+
           parJour.push({
-            date: dateStr,
-            dateDisplay: this.formatDate(dateStr),
-            ops: { ...dayOps },
-            total: totalJour
+            date:          dateStr,
+            dateDisplay:   this.formatDate(dateStr),
+            ops:           { ...dayOps },
+            total:         totalJour,
+            cumulativeDiff: cumulativeDiffTotal
           });
         }
       }
 
+      for (const sup of supervisors) {
+        parSuperviseur[sup.id].cumulativeDiff = INTERNATIONAL_TYPES.reduce(
+          (sum, t) => sum + (parSuperviseur[sup.id].ops[t].diff || 0), 0
+        );
+      }
+
       const totalGlobal = INTERNATIONAL_TYPES.reduce(
-        (acc, t) => ({ debut: acc.debut + totauxParOp[t].debut, fin: acc.fin + totauxParOp[t].fin, gr: acc.gr + totauxParOp[t].gr }),
-        { debut: 0, fin: 0, gr: 0 }
+        (acc, t) => ({
+          f1:   acc.f1   + totauxParOp[t].f1,
+          f2:   acc.f2   + totauxParOp[t].f2,
+          diff: acc.diff + totauxParOp[t].diff
+        }),
+        { f1: 0, f2: 0, diff: 0 }
       );
 
       return {
         success: true,
-        mode: 'plage',
-        plage: { debut: startDateStr, fin: endDateStr, nombreJours: dates.length, joursAvecDonnees: parJour.length },
+        mode:    'plage',
+        plage: {
+          debut:             startDateStr,
+          fin:               endDateStr,
+          nombreJours:       dates.length,
+          joursAvecDonnees:  parJour.length
+        },
         totauxParOperateur: totauxParOp,
-        totalGlobal,
-        parJour: parJour.reverse(),
-        parSuperviseur: Object.values(parSuperviseur)
-          .sort((a, b) => {
-            const totalA = INTERNATIONAL_TYPES.reduce((s, t) => s + a.ops[t].debut, 0);
-            const totalB = INTERNATIONAL_TYPES.reduce((s, t) => s + b.ops[t].debut, 0);
-            return totalB - totalA;
-          })
+        totalGlobal:        { ...totalGlobal, cumulativeTotal: cumulativeDiffTotal },
+        parJour:            parJour.reverse(),
+        parSuperviseur:     Object.values(parSuperviseur).sort((a, b) => {
+          const totalA = INTERNATIONAL_TYPES.reduce((s, t) => s + a.ops[t].f1, 0);
+          const totalB = INTERNATIONAL_TYPES.reduce((s, t) => s + b.ops[t].f1, 0);
+          return totalB - totalA;
+        })
+      };
+    } catch (error) {
+      console.error('❌ [CUMUL INTL] Erreur:', error);
+      throw error;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // CUMUL TOTAL DEPUIS LE DÉBUT
+  // ══════════════════════════════════════════════════════════════════════════
+
+  async getCumulTotalGeneral() {
+    try {
+      console.log(`📊 [CUMUL TOTAL] Calcul depuis le début`);
+
+      const firstSnapshot = await prisma.dailySnapshot.findFirst({
+        orderBy: { date: 'asc' },
+        select:  { date: true }
+      });
+
+      const today = new Date().toISOString().split('T')[0];
+
+      if (!firstSnapshot) return await this.getInternationalLive(today);
+
+      const startDate = firstSnapshot.date.toISOString().split('T')[0];
+      return await this.getCumulInternational(startDate, today);
+
+    } catch (error) {
+      console.error('❌ [CUMUL TOTAL] Erreur:', error);
+      throw error;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // CUMUL TOTAL RÉEL (Snapshots + Opérations Admin)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  async getRealCumulTotal() {
+    try {
+      console.log(`📊 [REAL CUMUL] Calcul du cumul réel (snapshots + opérations)`);
+
+      // 1. Récupérer le cumul des snapshots
+      const snapshotResult = await prisma.dailySnapshot.aggregate({
+        _sum: {
+          westernUnionFin: true,
+          westernUnionDebut: true,
+          riaFin: true,
+          riaDebut: true,
+          moneygramFin: true,
+          moneygramDebut: true
+        }
+      });
+
+      const snapshotTotal = (
+        ((snapshotResult._sum.westernUnionFin || 0) - (snapshotResult._sum.westernUnionDebut || 0)) +
+        ((snapshotResult._sum.riaFin || 0) - (snapshotResult._sum.riaDebut || 0)) +
+        ((snapshotResult._sum.moneygramFin || 0) - (snapshotResult._sum.moneygramDebut || 0))
+      ) / 100;
+
+      // 2. Récupérer le solde des opérations admin
+      const operations = await prisma.transaction.aggregate({
+        where: {
+          description: { startsWith: '[CUMUL_TOTAL]' },
+          NOT: { description: { contains: '[SUPPRIMÉ]' } }
+        },
+        _sum: {
+          montant: true
+        },
+        _count: true
+      });
+
+      // Les montants en base sont en centimes
+      const operationsTotal = (operations._sum.montant || 0) / 100;
+
+      // 3. Le cumul réel = snapshots + opérations
+      const realCumulTotal = snapshotTotal + operationsTotal;
+
+      console.log(`📊 [REAL CUMUL] Snapshots: ${snapshotTotal.toLocaleString('fr-FR')} F`);
+      console.log(`📊 [REAL CUMUL] Opérations: ${operationsTotal.toLocaleString('fr-FR')} F`);
+      console.log(`📊 [REAL CUMUL] TOTAL RÉEL: ${realCumulTotal.toLocaleString('fr-FR')} F`);
+
+      return {
+        success: true,
+        snapshotTotal,
+        operationsTotal,
+        realCumulTotal,
+        nombreOperations: operations._count
       };
 
     } catch (error) {
-      console.error('❌ [CUMUL INTL] Erreur:', error);
+      console.error('❌ [REAL CUMUL] Erreur:', error);
+      throw error;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // CUMUL JUSQU'À UNE DATE (Snapshots + Opérations jusqu'à cette date)
+  // ══════════════════════════════════════════════════════════════════════════
+
+  async getRealCumulUpToDate(dateStr) {
+    try {
+      console.log(`📊 [REAL CUMUL DATE] Calcul jusqu'au ${dateStr}`);
+
+      const targetDate = new Date(dateStr);
+      targetDate.setHours(23, 59, 59, 999);
+
+      // 1. Snapshots jusqu'à la date
+      const snapshots = await prisma.dailySnapshot.findMany({
+        where: { date: { lte: targetDate } },
+        select: {
+          westernUnionDebut: true,
+          westernUnionFin: true,
+          riaDebut: true,
+          riaFin: true,
+          moneygramDebut: true,
+          moneygramFin: true
+        }
+      });
+
+      let snapshotTotal = 0;
+      for (const snap of snapshots) {
+        snapshotTotal += (
+          (snap.westernUnionFin - snap.westernUnionDebut) +
+          (snap.riaFin - snap.riaDebut) +
+          (snap.moneygramFin - snap.moneygramDebut)
+        );
+      }
+      snapshotTotal = snapshotTotal / 100;
+
+      // 2. Opérations admin jusqu'à la date
+      const operations = await prisma.transaction.aggregate({
+        where: {
+          description: { startsWith: '[CUMUL_TOTAL]' },
+          NOT: { description: { contains: '[SUPPRIMÉ]' } },
+          createdAt: { lte: targetDate }
+        },
+        _sum: { montant: true }
+      });
+
+      const operationsTotal = (operations._sum.montant || 0) / 100;
+      const realCumulTotal = snapshotTotal + operationsTotal;
+
+      console.log(`📊 [REAL CUMUL DATE] ${dateStr} - Snapshots: ${snapshotTotal.toLocaleString('fr-FR')} F, Opérations: ${operationsTotal.toLocaleString('fr-FR')} F, Total: ${realCumulTotal.toLocaleString('fr-FR')} F`);
+
+      return {
+        success: true,
+        date: dateStr,
+        snapshotTotal,
+        operationsTotal,
+        realCumulTotal
+      };
+
+    } catch (error) {
+      console.error('❌ [REAL CUMUL DATE] Erreur:', error);
       throw error;
     }
   }
@@ -505,38 +545,375 @@ class CumulService {
   // PRESETS
   // ══════════════════════════════════════════════════════════════════════════
 
-  async getCumulF1F2ByPreset(preset) {
-    const { startDate, endDate } = this._presetToDates(preset, { '2j':2,'3j':3,'1m':30,'1an':365 });
-    return this.getCumulF1F2(startDate, endDate);
-  }
-
   async getCumulInternationalByPreset(preset) {
-    const { startDate, endDate } = this._presetToDates(preset, { '1m':30,'3m':90,'6m':180,'1an':365 });
+    const { startDate, endDate } = this._presetToDates(preset, { '1m': 30, '3m': 90, '6m': 180, '1an': 365 });
     return this.getCumulInternational(startDate, endDate);
   }
 
   _presetToDates(preset, map) {
     const daysBack = map[preset] ?? 30;
-    const today = new Date(); today.setHours(0,0,0,0);
-    const end = new Date(today); end.setDate(today.getDate() - 1);
-    const start = new Date(today); start.setDate(today.getDate() - daysBack);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const end   = new Date(today);
+    end.setDate(today.getDate() - 1);
+    const start = new Date(today);
+    start.setDate(today.getDate() - daysBack);
     return {
       startDate: start.toISOString().split('T')[0],
-      endDate: end.toISOString().split('T')[0]
+      endDate:   end.toISOString().split('T')[0]
     };
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  // ENDPOINT COMBINÉ
+  // CUMUL TOTAL — DÉPÔT ADMIN DIRECT
   // ══════════════════════════════════════════════════════════════════════════
 
-  async getFullCumul(startDateStr, endDateStr) {
-    const end = endDateStr ?? startDateStr;
-    const [f1f2, intl] = await Promise.all([
-      this.getCumulF1F2(startDateStr, end),
-      this.getCumulInternational(startDateStr, end)
-    ]);
-    return { f1f2, international: intl };
+  async createCumulDepot(adminId, montant, commentaire = null) {
+    return this._createCumulOperation(adminId, 'DEPOT', montant, commentaire);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // CUMUL TOTAL — RETRAIT ADMIN DIRECT
+  // ══════════════════════════════════════════════════════════════════════════
+
+  async createCumulRetrait(adminId, montant, commentaire = null) {
+    return this._createCumulOperation(adminId, 'RETRAIT', montant, commentaire);
+  }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // Méthode interne partagée dépôt/retrait cumul total
+  // ──────────────────────────────────────────────────────────────────────────
+
+  async _createCumulOperation(adminId, type, montant, commentaire) {
+    try {
+      const admin = await prisma.user.findUnique({
+        where:  { id: adminId },
+        select: { id: true, nomComplet: true, role: true }
+      });
+      if (!admin) throw new Error('Utilisateur introuvable');
+      if (admin.role !== 'ADMIN') throw new Error('Seul un admin peut effectuer cette opération');
+
+      const montantFloat = parseFloat(montant);
+      if (isNaN(montantFloat) || montantFloat <= 0) {
+        throw new Error('Montant invalide — doit être un nombre positif');
+      }
+
+      const montantInt = this.convertToInt(montantFloat);
+      const label      = type === 'DEPOT' ? 'Dépôt' : 'Retrait';
+
+      let description = `[CUMUL_TOTAL] ${label} — ${admin.nomComplet}`;
+
+      const commentaireTrimmed = commentaire?.trim() ?? null;
+      if (commentaireTrimmed && commentaireTrimmed.length > 0) {
+        description += ` | ${commentaireTrimmed}`;
+      }
+
+      const transaction = await prisma.transaction.create({
+        data: {
+          montant:    montantInt,
+          type,
+          description,
+          envoyeurId: adminId,
+        },
+        select: {
+          id: true, type: true, montant: true,
+          description: true, createdAt: true
+        }
+      });
+
+      console.log(`✅ [CUMUL ${type}] ${montantFloat} F — ${admin.nomComplet}`);
+
+      return {
+        success:     true,
+        id:          transaction.id,
+        type:        transaction.type,
+        montant:     this.convertFromInt(transaction.montant),
+        description: transaction.description,
+        commentaire: commentaireTrimmed,
+        createdAt:   transaction.createdAt,
+        admin:       admin.nomComplet,
+        message:     `${label} de ${montantFloat.toLocaleString('fr-FR')} F enregistré avec succès`
+      };
+    } catch (error) {
+      console.error(`❌ [CUMUL ${type}] Erreur:`, error.message);
+      throw error;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // CUMUL TOTAL — HISTORIQUE DES OPÉRATIONS
+  // ══════════════════════════════════════════════════════════════════════════
+
+  async getCumulHistory(filters = {}) {
+    try {
+      console.log(`📋 [CUMUL HISTORY] Chargement historique`, filters);
+
+      const baseWhere = {
+        AND: [
+          { description: { startsWith: '[CUMUL_TOTAL]' } },
+          { NOT: { description: { contains: '[SUPPRIMÉ]' } } }
+        ]
+      };
+
+      if (filters.type && ['DEPOT', 'RETRAIT'].includes(filters.type.toUpperCase())) {
+        baseWhere.AND.push({ type: filters.type.toUpperCase() });
+      } else {
+        baseWhere.AND.push({ type: { in: ['DEPOT', 'RETRAIT'] } });
+      }
+
+      if (filters.dateDebut || filters.dateFin) {
+        const createdAtFilter = {};
+        if (filters.dateDebut) {
+          const d = new Date(filters.dateDebut);
+          if (!isNaN(d.getTime())) {
+            d.setHours(0, 0, 0, 0);
+            createdAtFilter.gte = d;
+          }
+        }
+        if (filters.dateFin) {
+          const d = new Date(filters.dateFin);
+          if (!isNaN(d.getTime())) {
+            d.setHours(23, 59, 59, 999);
+            createdAtFilter.lte = d;
+          }
+        }
+        if (Object.keys(createdAtFilter).length > 0) {
+          baseWhere.AND.push({ createdAt: createdAtFilter });
+        }
+      }
+
+      const page  = Math.max(1, parseInt(filters.page  ?? 1));
+      const limit = Math.min(200, Math.max(1, parseInt(filters.limit ?? 50)));
+      const skip  = (page - 1) * limit;
+
+      const [transactions, totalCount, statsAll] = await Promise.all([
+        prisma.transaction.findMany({
+          where: baseWhere,
+          select: {
+            id:          true,
+            type:        true,
+            montant:     true,
+            description: true,
+            createdAt:   true,
+            envoyeur: {
+              select: { id: true, nomComplet: true, role: true }
+            }
+          },
+          orderBy: { createdAt: 'desc' },
+          skip,
+          take: limit
+        }),
+        prisma.transaction.count({ where: baseWhere }),
+        (() => {
+          const statsWhere = {
+            AND: [
+              { description: { startsWith: '[CUMUL_TOTAL]' } },
+              { NOT: { description: { contains: '[SUPPRIMÉ]' } } },
+              { type: { in: ['DEPOT', 'RETRAIT'] } }
+            ]
+          };
+          if (filters.dateDebut || filters.dateFin) {
+            const cf = {};
+            if (filters.dateDebut) { const d = new Date(filters.dateDebut); d.setHours(0,0,0,0); cf.gte = d; }
+            if (filters.dateFin)   { const d = new Date(filters.dateFin);   d.setHours(23,59,59,999); cf.lte = d; }
+            if (Object.keys(cf).length) statsWhere.AND.push({ createdAt: cf });
+          }
+          return prisma.transaction.findMany({ where: statsWhere, select: { type: true, montant: true } });
+        })()
+      ]);
+
+      let totalDepots = 0, totalRetraits = 0;
+      let plusGrosDepot = 0, plusGrosRetrait = 0;
+
+      statsAll.forEach(tx => {
+        const m = this.convertFromInt(tx.montant);
+        if (tx.type === 'DEPOT') {
+          totalDepots += m;
+          if (m > plusGrosDepot) plusGrosDepot = m;
+        } else {
+          totalRetraits += m;
+          if (m > plusGrosRetrait) plusGrosRetrait = m;
+        }
+      });
+
+      const soldeNet = totalDepots - totalRetraits;
+
+      console.log(`📋 [CUMUL HISTORY] totalDepots=${totalDepots} totalRetraits=${totalRetraits} soldeNet=${soldeNet}`);
+
+      const txFormatted = transactions.map(tx => {
+        const m              = this.convertFromInt(tx.montant);
+        const rawDescription = tx.description ?? '';
+
+        let commentaire = null;
+        const separatorIdx = rawDescription.indexOf(' | ');
+        if (separatorIdx !== -1) {
+          commentaire = rawDescription.slice(separatorIdx + 3).trim() || null;
+        }
+
+        return {
+          id:          tx.id,
+          type:        tx.type,
+          montant:     m,
+          createdAt:   tx.createdAt,
+          description: rawDescription,
+          commentaire,
+          auteur: tx.envoyeur
+            ? { id: tx.envoyeur.id, nomComplet: tx.envoyeur.nomComplet }
+            : null
+        };
+      });
+
+      return {
+        success: true,
+        pagination: {
+          page,
+          limit,
+          total:       totalCount,
+          totalPages:  Math.ceil(totalCount / limit),
+          hasNext:     page * limit < totalCount,
+          hasPrev:     page > 1
+        },
+        statistiques: {
+          totalDepots,
+          totalRetraits,
+          soldeNet,
+          nombreOperations: statsAll.length,
+          plusGrosDepot,
+          plusGrosRetrait
+        },
+        filtresAppliques: {
+          type:      filters.type      ?? null,
+          dateDebut: filters.dateDebut ?? null,
+          dateFin:   filters.dateFin   ?? null
+        },
+        transactions: txFormatted
+      };
+    } catch (error) {
+      console.error('❌ [CUMUL HISTORY] Erreur:', error.message);
+      throw error;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // CUMUL TOTAL — SUPPRESSION LOGIQUE D'UNE OPÉRATION
+  // ══════════════════════════════════════════════════════════════════════════
+
+  async deleteCumulOperation(transactionId, adminId) {
+    try {
+      const transaction = await prisma.transaction.findUnique({
+        where:  { id: transactionId },
+        select: { id: true, type: true, montant: true, description: true, createdAt: true }
+      });
+
+      if (!transaction) throw new Error('Transaction introuvable');
+
+      if (!transaction.description?.startsWith('[CUMUL_TOTAL]')) {
+        throw new Error('Cette transaction ne fait pas partie du cumul total');
+      }
+      if (transaction.description?.includes('[SUPPRIMÉ]')) {
+        throw new Error('Cette transaction est déjà supprimée');
+      }
+
+      const admin = await prisma.user.findUnique({
+        where:  { id: adminId },
+        select: { id: true, nomComplet: true, role: true }
+      });
+      if (!admin)             throw new Error('Utilisateur introuvable');
+      if (admin.role !== 'ADMIN') throw new Error('Seul un admin peut supprimer une opération cumul total');
+
+      const newDescription =
+        `[SUPPRIMÉ] ${transaction.description} — supprimé par ${admin.nomComplet}`;
+
+      await prisma.transaction.update({
+        where: { id: transactionId },
+        data:  { description: newDescription }
+      });
+
+      console.log(`✅ [CUMUL DELETE] Transaction ${transactionId} supprimée par ${admin.nomComplet}`);
+
+      return {
+        success:       true,
+        transactionId,
+        ancienMontant: this.convertFromInt(transaction.montant),
+        type:          transaction.type,
+        message:       'Opération supprimée — historique conservé pour audit'
+      };
+    } catch (error) {
+      console.error('❌ [CUMUL DELETE] Erreur:', error.message);
+      throw error;
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // CUMUL TOTAL — MODIFICATION DU MONTANT D'UNE OPÉRATION
+  // ══════════════════════════════════════════════════════════════════════════
+
+  async updateCumulOperationMontant(transactionId, newMontant, adminId) {
+    try {
+      const transaction = await prisma.transaction.findUnique({
+        where:  { id: transactionId },
+        select: { id: true, type: true, montant: true, description: true }
+      });
+
+      if (!transaction) throw new Error('Transaction introuvable');
+
+      if (!transaction.description?.startsWith('[CUMUL_TOTAL]')) {
+        throw new Error('Cette transaction ne fait pas partie du cumul total');
+      }
+      if (transaction.description?.includes('[SUPPRIMÉ]')) {
+        throw new Error('Impossible de modifier une transaction supprimée');
+      }
+
+      const admin = await prisma.user.findUnique({
+        where:  { id: adminId },
+        select: { id: true, nomComplet: true, role: true }
+      });
+      if (!admin)             throw new Error('Utilisateur introuvable');
+      if (admin.role !== 'ADMIN') throw new Error('Seul un admin peut modifier une opération cumul total');
+
+      const newMontantFloat = parseFloat(newMontant);
+      if (isNaN(newMontantFloat) || newMontantFloat <= 0) {
+        throw new Error('Montant invalide — doit être un nombre positif');
+      }
+
+      const newMontantInt = this.convertToInt(newMontantFloat);
+      const oldMontantInt = Number(transaction.montant);
+
+      if (newMontantInt === oldMontantInt) {
+        throw new Error('Le nouveau montant est identique à l\'ancien');
+      }
+
+      await prisma.$transaction(async (tx) => {
+        await tx.transaction.update({
+          where: { id: transactionId },
+          data:  { montant: newMontantInt }
+        });
+
+        await tx.transaction.create({
+          data: {
+            montant:     newMontantInt,
+            type:        'AUDIT_MODIFICATION',
+            description: `[CUMUL_TOTAL][AUDIT] Modification montant tx ${transactionId} — ` +
+                         `Ancien: ${this.convertFromInt(oldMontantInt)} F, ` +
+                         `Nouveau: ${newMontantFloat} F — par ${admin.nomComplet}`,
+            envoyeurId: adminId
+          }
+        });
+      });
+
+      console.log(`✅ [CUMUL UPDATE] Transaction ${transactionId} modifiée par ${admin.nomComplet}`);
+
+      return {
+        success:        true,
+        transactionId,
+        ancienMontant:  this.convertFromInt(oldMontantInt),
+        nouveauMontant: newMontantFloat,
+        message:        'Montant modifié — trace d\'audit enregistrée'
+      };
+    } catch (error) {
+      console.error('❌ [CUMUL UPDATE] Erreur:', error.message);
+      throw error;
+    }
   }
 }
 

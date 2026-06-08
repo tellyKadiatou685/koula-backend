@@ -11,6 +11,7 @@ import AccountTypes from './routes/accoutTypeRoutes.js';
 import cronHandler from '../api/cron.js';
 import partner from './routes/partnerBalanceRoutes.js';
 import cumulRoutes from './routes/cumulRoutes.js';
+import notificationRoutes from './routes/notificationRoutes.js';
 
 const app = express();
 
@@ -129,6 +130,7 @@ app.use('/api/account-lines',   AccountLines);
 app.use('/api/accountype',      AccountTypes);
 app.use('/api/partner-balance', partner);
 app.use('/api/cumul', cumulRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 app.get('/api/test-auth', (req, res) => res.json({
   message: 'Route accessible',

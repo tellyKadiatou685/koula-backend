@@ -851,23 +851,20 @@ class TransactionService {
     return Number(value) / 100;
   }
 
-  // =====================================
-  // CRÉATION ADMIN TRANSACTION
-  // =====================================
   async createAdminTransaction(adminId, transactionData) {
     try {
       const {
         superviseurId, typeCompte, typeOperation, montant,
         partenaireId, partenaireNom, telephoneLibre, callerRole,
-        finSecondaire  // ← F2 optionnel
+        finSecondaire
       } = transactionData;
-
+  
       const montantFloat = parseFloat(montant);
       if (isNaN(montantFloat) || montantFloat <= 0) throw new Error('Montant invalide');
-
+  
       const montantInt = this.convertToInt(montantFloat);
       const isPartnerTransaction = !!(partenaireId || partenaireNom);
-
+  
       if (!isPartnerTransaction && typeCompte) {
         const typeCompteUpper = typeCompte.toUpperCase();
         const typeActif = await AccountTypeService.isTypeActive(typeCompteUpper);
@@ -875,7 +872,7 @@ class TransactionService {
           const label = await AccountTypeService.getTypeLabel(typeCompteUpper);
           throw new Error(`Le type de compte "${label}" est actuellement désactivé. Contactez l'administrateur.`);
         }
-
+  
         const isSupervisorCall = callerRole === 'SUPERVISEUR';
         if (isSupervisorCall && typeOperation === 'depot') {
           const canDebut = await AccountTypeService.canEnterDebut(typeCompteUpper);
@@ -891,17 +888,17 @@ class TransactionService {
           }
         }
       }
-
+  
       const supervisor = await prisma.user.findUnique({
         where: { id: superviseurId, role: 'SUPERVISEUR' },
         select: { id: true, nomComplet: true, status: true }
       });
-
+  
       if (!supervisor) throw new Error('Superviseur non trouvé');
-
+  
       let partner = null;
       let partnerDisplayName = '';
-
+  
       if (isPartnerTransaction) {
         if (partenaireId) {
           partner = await prisma.user.findUnique({
@@ -917,19 +914,34 @@ class TransactionService {
           }
         }
       }
-
+  
+      // Récupérer l'admin pour les notifications
+      const admin = await prisma.user.findUnique({
+        where: { id: adminId },
+        select: { id: true, nomComplet: true, role: true }
+      });
+  
       if (isPartnerTransaction) {
         let transactionType, description;
         if (typeOperation === 'depot') {
-          transactionType = 'DEPOT'; description = `Dépôt partenaire ${partnerDisplayName}`;
+          transactionType = 'DEPOT';
+          description = `Dépôt partenaire ${partnerDisplayName}`;
         } else {
-          transactionType = 'RETRAIT'; description = `Retrait partenaire ${partnerDisplayName}`;
+          transactionType = 'RETRAIT';
+          description = `Retrait partenaire ${partnerDisplayName}`;
         }
-
+  
         const result = await prisma.$transaction(async (tx) => {
-          const txData = { montant: montantInt, type: transactionType, description, envoyeurId: adminId, destinataireId: superviseurId };
-          if (partenaireId) { txData.partenaireId = partenaireId; }
-          else if (partenaireNom) {
+          const txData = {
+            montant: montantInt,
+            type: transactionType,
+            description,
+            envoyeurId: adminId,
+            destinataireId: superviseurId
+          };
+          if (partenaireId) {
+            txData.partenaireId = partenaireId;
+          } else if (partenaireNom) {
             txData.partenaireNom = partenaireNom.trim();
             if (telephoneLibre && telephoneLibre.trim()) txData.telephoneLibre = telephoneLibre.trim();
           }
@@ -939,18 +951,60 @@ class TransactionService {
           });
           return { transaction, updatedAccount: null };
         });
-
+  
+        // 🔔 NOTIFICATION AU SUPERVISEUR
         setImmediate(async () => {
           try {
-            const notificationTitle = typeOperation === 'depot' ? 'Nouveau dépôt partenaire' : 'Nouveau retrait partenaire';
-            const notificationMessage = typeOperation === 'depot'
-              ? `${partnerDisplayName} a déposé ${this.formatAmount(montantFloat)}`
-              : `${partnerDisplayName} a retiré ${this.formatAmount(montantFloat)}`;
-            const notificationType = typeOperation === 'depot' ? 'DEPOT_PARTENAIRE' : 'RETRAIT_PARTENAIRE';
-            await NotificationService.createNotification({ userId: superviseurId, title: notificationTitle, message: notificationMessage, type: notificationType });
-          } catch (notifError) { console.error('Erreur notification (non-bloquante):', notifError); }
+            if (typeOperation === 'depot') {
+              await NotificationService.notifyDepotPartenaire({
+                superviseurId,
+                partenaireNom: partnerDisplayName,
+                montant: montantFloat
+              });
+            } else {
+              await NotificationService.notifyRetraitPartenaire({
+                superviseurId,
+                partenaireNom: partnerDisplayName,
+                montant: montantFloat
+              });
+            }
+          } catch (notifError) {
+            console.error('Erreur notification superviseur:', notifError);
+          }
         });
-
+  
+        // 🔔 NOTIFICATION AU PARTENAIRE (s'il est enregistré)
+        if (partenaireId) {
+          setImmediate(async () => {
+            try {
+              await NotificationService.createNotification({
+                userId: partenaireId,
+                title: typeOperation === 'depot' ? '✅ Dépôt effectué' : '💸 Retrait effectué',
+                message: `Vous avez ${typeOperation === 'depot' ? 'déposé' : 'retiré'} ${this.formatAmount(montantFloat)} à ${supervisor.nomComplet}`,
+                type: typeOperation === 'depot' ? 'DEPOT_PARTENAIRE' : 'RETRAIT_PARTENAIRE'
+              });
+            } catch (notifError) {
+              console.error('Erreur notification partenaire:', notifError);
+            }
+          });
+        }
+  
+        // 🔔 NOTIFICATION À L'ADMIN (optionnel)
+        if (admin && admin.role === 'ADMIN') {
+          setImmediate(async () => {
+            try {
+              await NotificationService.createNotification({
+                userId: admin.id,
+                title: '📝 Transaction partenaire',
+                message: `${typeOperation === 'depot' ? 'Dépôt' : 'Retrait'} de ${this.formatAmount(montantFloat)} par ${partnerDisplayName} pour ${supervisor.nomComplet}`,
+                type: 'AUDIT_MODIFICATION'
+              });
+            } catch (notifError) {
+              console.error('Erreur notification admin:', notifError);
+            }
+          });
+        }
+  
         return {
           transaction: {
             id: result.transaction.id, type: result.transaction.type, montant: montantFloat,
@@ -963,26 +1017,31 @@ class TransactionService {
           },
           accountUpdated: false
         };
-
+  
       } else {
+        // Transaction début/fin journée (sans partenaire)
         let account = await prisma.account.upsert({
           where: { userId_type: { userId: superviseurId, type: typeCompte.toUpperCase() } },
           update: {},
           create: { type: typeCompte.toUpperCase(), userId: superviseurId, balance: 0, initialBalance: 0, finSecondaire: 0 },
           select: { id: true, balance: true, initialBalance: true, finSecondaire: true }
         });
-
+  
         let transactionType, description, balanceUpdate;
+        let oldBalance = 0;
+        let oldInitialBalance = 0;
+  
         if (typeOperation === 'depot') {
           transactionType = 'DEBUT_JOURNEE';
           description = `Début journée ${typeCompte}`;
+          oldInitialBalance = this.convertFromInt(account.initialBalance);
           balanceUpdate = { initialBalance: { increment: montantInt } };
         } else {
           transactionType = 'FIN_JOURNEE';
           description = `Fin journée ${typeCompte}`;
+          oldBalance = this.convertFromInt(account.balance);
           balanceUpdate = { balance: montantInt };
-
-          // ← F2 optionnel : stocker si fourni, sinon remettre à 0
+  
           if (finSecondaire != null) {
             const f2Float = parseFloat(finSecondaire);
             balanceUpdate.finSecondaire = isNaN(f2Float) || f2Float <= 0
@@ -992,30 +1051,66 @@ class TransactionService {
             balanceUpdate.finSecondaire = 0;
           }
         }
-
+  
         const result = await prisma.$transaction(async (tx) => {
           const updatedAccount = await tx.account.update({
             where: { id: account.id }, data: balanceUpdate,
             select: { balance: true, initialBalance: true, finSecondaire: true }
           });
           const transaction = await tx.transaction.create({
-            data: { montant: montantInt, type: transactionType, description, envoyeurId: adminId, destinataireId: superviseurId, compteDestinationId: account.id },
+            data: {
+              montant: montantInt,
+              type: transactionType,
+              description,
+              envoyeurId: adminId,
+              destinataireId: superviseurId,
+              compteDestinationId: account.id
+            },
             select: { id: true, type: true, description: true, createdAt: true }
           });
           return { transaction, updatedAccount };
         });
-
+  
+        // 🔔 NOTIFICATION AU SUPERVISEUR
         setImmediate(async () => {
           try {
-            const notificationTitle = typeOperation === 'depot' ? 'Solde de début mis à jour' : 'Solde de fin enregistré';
-            const notificationType = typeOperation === 'depot' ? 'DEBUT_JOURNEE' : 'FIN_JOURNEE';
-            await NotificationService.createNotification({ userId: superviseurId, title: notificationTitle, message: `${description} - ${this.formatAmount(montantFloat)} par l'admin`, type: notificationType });
-          } catch (notifError) { console.error('Erreur notification (non-bloquante):', notifError); }
+            if (typeOperation === 'depot') {
+              await NotificationService.notifyDebutJournee({
+                superviseurId,
+                typeCompte,
+                montant: montantFloat
+              });
+            } else {
+              await NotificationService.notifyFinJournee({
+                superviseurId,
+                typeCompte,
+                montant: montantFloat
+              });
+            }
+          } catch (notifError) {
+            console.error('Erreur notification superviseur:', notifError);
+          }
         });
-
+  
+        // 🔔 NOTIFICATION À L'ADMIN (optionnel - pour tracer les modifications)
+        if (admin && admin.role === 'ADMIN') {
+          setImmediate(async () => {
+            try {
+              await NotificationService.createNotification({
+                userId: admin.id,
+                title: '📝 Transaction journée',
+                message: `${typeOperation === 'depot' ? 'Début journée' : 'Fin journée'} ${typeCompte} : ${this.formatAmount(montantFloat)} pour ${supervisor.nomComplet}`,
+                type: 'AUDIT_MODIFICATION'
+              });
+            } catch (notifError) {
+              console.error('Erreur notification admin:', notifError);
+            }
+          });
+        }
+  
         const f2Stored = this.convertFromInt(result.updatedAccount.finSecondaire || 0);
         const f1Stored = this.convertFromInt(result.updatedAccount.balance || 0);
-
+  
         return {
           transaction: {
             id: result.transaction.id, type: result.transaction.type, montant: montantFloat,
@@ -1025,14 +1120,13 @@ class TransactionService {
             partenaireNom: null, isRegisteredPartner: false, transactionCategory: 'JOURNEE'
           },
           accountUpdated: true,
-          soldeActuel:    f1Stored,
-          soldeInitial:   this.convertFromInt(result.updatedAccount.initialBalance),
-          // ← F2 retourné pour confirmation
-          finSecondaire:  f2Stored > 0 ? f2Stored : null,
-          diffF2F1:       f2Stored > 0 ? f2Stored - f1Stored : null
+          soldeActuel: f1Stored,
+          soldeInitial: this.convertFromInt(result.updatedAccount.initialBalance),
+          finSecondaire: f2Stored > 0 ? f2Stored : null,
+          diffF2F1: f2Stored > 0 ? f2Stored - f1Stored : null
         };
       }
-
+  
     } catch (error) {
       console.error('Erreur createAdminTransaction:', error);
       throw error;
