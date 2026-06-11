@@ -1774,12 +1774,17 @@ class TransactionService {
         };
       }
 
-      const [supervisor, allTransactions, featuredAccounts] = await Promise.all([
+      const [supervisor, allTransactions] = await Promise.all([
         prisma.user.findUnique({
           where: { id: superviseurId },
           select: {
             id: true, nomComplet: true, status: true,
-            accounts: { select: { type: true, balance: true, initialBalance: true, previousInitialBalance: true, finSecondaire: true } }
+            accounts: {
+              select: {
+                type: true, balance: true, initialBalance: true,
+                previousInitialBalance: true, finSecondaire: true
+              }
+            }
           }
         }),
         prisma.transaction.findMany({
@@ -1794,10 +1799,6 @@ class TransactionService {
           },
           orderBy: { createdAt: 'desc' },
           take: 50
-        }),
-        prisma.account.findMany({
-          where: { type: featuredType, user: { role: 'SUPERVISEUR', status: 'ACTIVE' } },
-          select: { balance: true, initialBalance: true, previousInitialBalance: true, finSecondaire: true }
         })
       ]);
 
@@ -1807,20 +1808,36 @@ class TransactionService {
         return {
           superviseur: { id: supervisor.id, nom: supervisor.nomComplet, status: supervisor.status },
           period, customDate,
-          featured: { type: featuredType, label: featuredLabel, personal: { debut: 0, sortie: 0, formatted: '0 F' }, total: 0, formatted: '0 F' },
-          uvMaster: { personal: { debut: 0, sortie: 0, formatted: '0 F' }, total: 0, formatted: '0 F' },
+          featured: {
+            type: featuredType, label: featuredLabel,
+            personal: { debut: 0, sortie: 0, formatted: '0 F' },
+            total: 0, formatted: '0 F'
+          },
+          uvMaster: {
+            personal: { debut: 0, sortie: 0, formatted: '0 F' },
+            total: 0, formatted: '0 F'
+          },
           comptes: { debut: {}, sortie: {}, sortieF2: {}, diffF2F1: {} },
-          totaux: { debutTotal: 0, sortieTotal: 0, grTotal: 0, formatted: { debutTotal: '0 F', sortieTotal: '0 F', grTotal: '0 F' } },
+          totaux: {
+            debutTotal: 0, sortieTotal: 0, grTotal: 0,
+            formatted: { debutTotal: '0 F', sortieTotal: '0 F', grTotal: '0 F' }
+          },
           recentTransactions: [],
-          dynamicConfig: { period, customDate, resetConfig: this.getResetConfig(), includeArchived, totalTransactionsFound: 0 }
+          dynamicConfig: {
+            period, customDate, resetConfig: this.getResetConfig(),
+            includeArchived, totalTransactionsFound: 0
+          }
         };
       }
 
       const accountsByType = { debut: {}, sortie: {}, sortieF2: {}, diffF2F1: {} };
       let totalDebutPersonnel = 0, totalSortiePersonnel = 0;
 
+      // ── Featured individuel : uniquement CE superviseur ───────────────────
+      let featuredDebut  = 0;
+      let featuredSortie = 0;
+
       if (includeArchived && (period === 'yesterday' || period === 'custom')) {
-        // ── CORRECTION : Pour les dates passées, utiliser le snapshot si disponible ──
         const snapshotTargetDate = period === 'yesterday'
           ? (() => { const d = new Date(); d.setDate(d.getDate() - 1); d.setHours(0,0,0,0); return d; })()
           : (() => { const d = new Date(customDate); d.setHours(0,0,0,0); return d; })();
@@ -1828,7 +1845,6 @@ class TransactionService {
         const snapshot = await this.getSnapshotForDate(superviseurId, snapshotTargetDate);
 
         if (snapshot) {
-          // Utiliser le snapshot : F2 correctement rempli via snapshot_f2
           Object.assign(accountsByType.debut,    snapshot.comptes.debut);
           Object.assign(accountsByType.sortie,   snapshot.comptes.sortie);
           Object.assign(accountsByType.sortieF2, snapshot.comptes.sortieF2 || {});
@@ -1836,8 +1852,13 @@ class TransactionService {
 
           totalDebutPersonnel  = snapshot.totaux.debutTotal;
           totalSortiePersonnel = snapshot.totaux.sortieTotal;
+
+          // ✅ Featured depuis le snapshot de CE superviseur uniquement
+          featuredDebut  = snapshot.comptes.debut[featuredType]  ?? 0;
+          featuredSortie = snapshot.comptes.sortie[featuredType] ?? 0;
+
         } else {
-          // Fallback : données actuelles du compte (F2 non disponible)
+          // Fallback : données actuelles de CE superviseur uniquement
           const accessMap = await readEntryAccess();
           supervisor.accounts.forEach(account => {
             const access = accessMap[account.type] || 'both';
@@ -1853,11 +1874,16 @@ class TransactionService {
             accountsByType.sortie[account.type] = ancienSortie;
             totalDebutPersonnel  += ancienDebut;
             totalSortiePersonnel += ancienSortie;
-            // F2 non disponible après reset (finSecondaire = 0)
+
+            // ✅ Featured depuis les comptes de CE superviseur uniquement
+            if (account.type === featuredType) {
+              featuredDebut  = ancienDebut;
+              featuredSortie = ancienSortie;
+            }
           });
         }
       } else {
-        // Données en direct (today)
+        // Données en direct (today) — CE superviseur uniquement
         supervisor.accounts.forEach(account => {
           const initial = this.convertFromInt(account.initialBalance || 0);
           const current = this.convertFromInt(account.balance || 0);
@@ -1873,6 +1899,12 @@ class TransactionService {
 
           totalDebutPersonnel  += initial;
           totalSortiePersonnel += current;
+
+          // ✅ Featured depuis les comptes de CE superviseur uniquement
+          if (account.type === featuredType) {
+            featuredDebut  = initial;
+            featuredSortie = current;
+          }
         });
       }
 
@@ -1881,7 +1913,9 @@ class TransactionService {
         const partnerName = this.getPartnerDisplayName(tx);
         if (partnerName && partnerName !== 'Partenaire inconnu') {
           const montant = this.convertFromInt(tx.montant);
-          if (!partenaireTransactions[partnerName]) partenaireTransactions[partnerName] = { depots: 0, retraits: 0 };
+          if (!partenaireTransactions[partnerName]) {
+            partenaireTransactions[partnerName] = { depots: 0, retraits: 0 };
+          }
           if (tx.type === 'DEPOT'   && tx.destinataireId === superviseurId) partenaireTransactions[partnerName].depots   += montant;
           if (tx.type === 'RETRAIT' && tx.destinataireId === superviseurId) partenaireTransactions[partnerName].retraits += montant;
         }
@@ -1892,16 +1926,9 @@ class TransactionService {
         if (amounts.retraits > 0) { accountsByType.sortie[`part-${partnerName}`] = amounts.retraits; totalSortiePersonnel += amounts.retraits; }
       });
 
-      let featuredDebut, featuredSortie;
-      if (includeArchived && (period === 'yesterday' || period === 'custom')) {
-        featuredDebut  = featuredAccounts.reduce((t, a) => t + this.convertFromInt(a.previousInitialBalance || 0), 0);
-        featuredSortie = featuredAccounts.reduce((t, a) => t + this.convertFromInt(a.initialBalance || 0), 0);
-      } else {
-        featuredDebut  = featuredAccounts.reduce((t, a) => t + this.convertFromInt(a.initialBalance || 0), 0);
-        featuredSortie = featuredAccounts.reduce((t, a) => t + this.convertFromInt(a.balance || 0), 0);
-      }
-
       const grTotal = totalSortiePersonnel - totalDebutPersonnel;
+
+      const featuredFormatted = featuredSortie.toLocaleString() + ' F';
 
       const recentTransactions = allTransactions.map(tx => {
         let personne = '';
@@ -1922,21 +1949,28 @@ class TransactionService {
         };
       });
 
-      const featuredFormatted = featuredSortie.toLocaleString() + ' F';
-
       return {
         superviseur: { id: supervisor.id, nom: supervisor.nomComplet, status: supervisor.status },
         period, customDate,
+        // ✅ Featured : début et fin de CE superviseur uniquement
         featured: {
           type:    featuredType,
           label:   featuredLabel,
-          personal: { debut: featuredDebut, sortie: featuredSortie, formatted: featuredFormatted },
-          total:   featuredSortie,
+          personal: {
+            debut:  featuredDebut,
+            sortie: featuredSortie,
+            formatted: featuredFormatted
+          },
+          total:     featuredSortie,
           formatted: featuredFormatted
         },
         uvMaster: {
-          personal: { debut: featuredDebut, sortie: featuredSortie, formatted: featuredFormatted },
-          total:    featuredSortie,
+          personal: {
+            debut:  featuredDebut,
+            sortie: featuredSortie,
+            formatted: featuredFormatted
+          },
+          total:     featuredSortie,
           formatted: featuredFormatted
         },
         comptes: accountsByType,

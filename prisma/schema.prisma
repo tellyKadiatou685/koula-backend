@@ -65,14 +65,14 @@ model DailyPartnerChoice {
 
 model Account {
   id                      String        @id @default(cuid())
-  type                    String        // ← CHANGEMENT: String au lieu de Enum pour support dynamique
   balance                 BigInt        @default(0)
   initialBalance          BigInt        @default(0)
   previousInitialBalance  BigInt        @default(0)
-  finSecondaire           BigInt        @default(0)
   userId                  String
   createdAt               DateTime      @default(now())
   updatedAt               DateTime      @updatedAt
+  finSecondaire           BigInt        @default(0)
+  type                    String
   user                    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   transactionsDestination Transaction[] @relation("TransactionCompteDestination")
   transactionsOrigine     Transaction[] @relation("TransactionCompteOrigine")
@@ -95,13 +95,13 @@ model Transaction {
   destinataireId      String?
   partenaireId        String?
   partenaireNom       String?
-  telephoneLibre      String?
   compteOrigineId     String?
   compteDestinationId String?
   isValidated         Boolean         @default(true)
   metadata            String?
   createdAt           DateTime        @default(now())
   updatedAt           DateTime        @updatedAt
+  telephoneLibre      String?
   compteDestination   Account?        @relation("TransactionCompteDestination", fields: [compteDestinationId], references: [id], map: "transaction_compte_destination_fkey")
   compteOrigine       Account?        @relation("TransactionCompteOrigine", fields: [compteOrigineId], references: [id], map: "transaction_compte_origine_fkey")
   destinataire        User?           @relation("TransactionDestinataire", fields: [destinataireId], references: [id], map: "transaction_destinataire_fkey")
@@ -135,47 +135,38 @@ model Notification {
 }
 
 model DailySnapshot {
-  id               String   @id @default(cuid())
-  date             DateTime @db.Date
-  userId           String
-  
-  // Types fixes standards
-  liquideDebut     BigInt   @default(0)
-  orangeMoneyDebut BigInt   @default(0)
-  waveDebut        BigInt   @default(0)
-  uvMasterDebut    BigInt   @default(0)
-  autresDebut      BigInt   @default(0)
-  liquideFin       BigInt   @default(0)
-  orangeMoneyFin   BigInt   @default(0)
-  waveFin          BigInt   @default(0)
-  uvMasterFin      BigInt   @default(0)
-  autresFin        BigInt   @default(0)
-
-  // Types supplémentaires fixes
-  freeMoneyDebut      BigInt   @default(0)
-  freeMoneyFin        BigInt   @default(0)
-  westernUnionDebut   BigInt   @default(0)
-  westernUnionFin     BigInt   @default(0)
-  riaDebut            BigInt   @default(0)
-  riaFin              BigInt   @default(0)
-  moneygramDebut      BigInt   @default(0)
-  moneygramFin        BigInt   @default(0)
-  seddoDebut          BigInt   @default(0)
-  seddoFin            BigInt   @default(0)
-  versementBankDebut  BigInt   @default(0)
-  versementBankFin    BigInt   @default(0)
-  
-  // ← NOUVEAU: Stockage JSON pour les types personnalisés dynamiques (AUTRES_1, AUTRES_2, etc.)
-  customTypesData     Json?    @default("{}")
-  
-  // Totaux
-  debutTotal       BigInt   @default(0)
-  sortieTotal      BigInt   @default(0)
-  grTotal          BigInt   @default(0)
-  
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
-  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id                 String   @id @default(cuid())
+  date               DateTime @db.Date
+  userId             String
+  liquideDebut       BigInt   @default(0)
+  orangeMoneyDebut   BigInt   @default(0)
+  waveDebut          BigInt   @default(0)
+  uvMasterDebut      BigInt   @default(0)
+  autresDebut        BigInt   @default(0)
+  liquideFin         BigInt   @default(0)
+  orangeMoneyFin     BigInt   @default(0)
+  waveFin            BigInt   @default(0)
+  uvMasterFin        BigInt   @default(0)
+  autresFin          BigInt   @default(0)
+  debutTotal         BigInt   @default(0)
+  sortieTotal        BigInt   @default(0)
+  grTotal            BigInt   @default(0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  freeMoneyDebut     BigInt   @default(0)
+  freeMoneyFin       BigInt   @default(0)
+  moneygramDebut     BigInt   @default(0)
+  moneygramFin       BigInt   @default(0)
+  riaDebut           BigInt   @default(0)
+  riaFin             BigInt   @default(0)
+  westernUnionDebut  BigInt   @default(0)
+  westernUnionFin    BigInt   @default(0)
+  seddoDebut         BigInt   @default(0)
+  seddoFin           BigInt   @default(0)
+  versementBankDebut BigInt   @default(0)
+  versementBankFin   BigInt   @default(0)
+  customTypesData    Json?    @default("{}")
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([userId, date])
   @@index([date])
@@ -193,10 +184,6 @@ model SystemConfig {
   @@index([key])
   @@map("system_config")
 }
-
-// ============================================
-// ENUMS
-// ============================================
 
 enum UserRole {
   ADMIN
@@ -223,9 +210,6 @@ enum TransactionType {
   AUDIT_SUPPRESSION
 }
 
-// ⚠️ Cet enum est conservé pour référence et compatibilité,
-// mais n'est PLUS utilisé par le modèle Account (qui utilise String maintenant)
-// Cela permet d'ajouter dynamiquement des types comme AUTRES_1, AUTRES_2, etc.
 enum AccountTypeEnum {
   LIQUIDE
   ORANGE_MONEY

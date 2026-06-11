@@ -1,8 +1,5 @@
-// server.js
-import dotenv from 'dotenv';
-
-// Charger les variables d'environnement EN PREMIER
-dotenv.config();
+import { config } from "dotenv";
+config({ override: true });
 
 // Maintenant importer l'app
 import app from './src/app.js';
