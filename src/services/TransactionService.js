@@ -2508,6 +2508,158 @@ async getActiveSupervisors() {
     orderBy: { nomComplet: 'asc' }
   });
 }
+
+// ══════════════════════════════════════════════════════════════════════════
+// EXPORT EXCEL — Dashboard Admin
+// Génère un classeur .xlsx (une seule feuille) à partir de getAdminDashboard()
+// ══════════════════════════════════════════════════════════════════════════
+async exportAdminDashboardToExcel(period = 'today', customDate = null) {
+  const ExcelJS = (await import('exceljs')).default;
+
+  // 1. Réutilise les données déjà calculées par le dashboard admin
+  const dashboardData = await this.getAdminDashboard(period, customDate);
+  const { globalTotals, supervisorCards, dynamicConfig } = dashboardData;
+
+  // 2. Construction du classeur
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'Système de gestion';
+  workbook.created = new Date();
+
+  const sheet = workbook.addWorksheet('Dashboard Admin', {
+    views: [{ state: 'frozen', ySplit: 4 }] // fige les lignes d'en-tête
+  });
+
+  // ── En-tête du rapport ──────────────────────────────────────────────────
+  sheet.mergeCells('A1:H1');
+  sheet.getCell('A1').value = `Dashboard Admin — ${this.getPeriodLabel(period, customDate)}`;
+  sheet.getCell('A1').font = { size: 14, bold: true };
+
+  sheet.mergeCells('A2:H2');
+  sheet.getCell('A2').value = `Généré le ${new Date().toLocaleString('fr-FR')} — Source: ${dynamicConfig.dataSource}`;
+  sheet.getCell('A2').font = { size: 9, italic: true, color: { argb: 'FF666666' } };
+
+  // ── Bandeau des totaux globaux ──────────────────────────────────────────
+  sheet.getCell('A4').value = 'TOTAUX GLOBAUX';
+  sheet.getCell('A4').font = { bold: true };
+  sheet.mergeCells('A4:H4');
+  sheet.getCell('A4').fill = {
+    type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCE6F1' }
+  };
+
+  sheet.addRow([]);
+  const totalsHeaderRow = sheet.addRow([
+    'Début total', 'Sortie total', 'G/R total',
+    `Vedette (${globalTotals.featured.label}) - Solde`,
+    `Vedette (${globalTotals.featured.label}) - Sorties`
+  ]);
+  totalsHeaderRow.font = { bold: true };
+
+  sheet.addRow([
+    globalTotals.debutTotalGlobal,
+    globalTotals.sortieTotalGlobal,
+    globalTotals.grTotalGlobal,
+    globalTotals.featured.solde,
+    globalTotals.featured.sorties
+  ]);
+
+  sheet.addRow([]); // ligne vide de séparation
+  sheet.addRow([]);
+
+  // ── Tableau détaillé par superviseur ────────────────────────────────────
+  const tableHeaderRowNum = sheet.lastRow.number + 1;
+  const headerRow = sheet.addRow([
+    'Superviseur', 'Statut', 'Type de compte',
+    'Début', 'Sortie (F1)', 'Sortie F2', 'Diff F2-F1'
+  ]);
+  headerRow.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  headerRow.eachCell(cell => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
+    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+  });
+
+  supervisorCards.forEach(card => {
+    const startRow = sheet.lastRow.number + 1;
+
+    // Tous les types de comptes présents (debut, sortie, sortieF2 confondus)
+    const allTypes = new Set([
+      ...Object.keys(card.comptes.debut || {}),
+      ...Object.keys(card.comptes.sortie || {}),
+      ...Object.keys(card.comptes.sortieF2 || {})
+    ]);
+
+    if (allTypes.size === 0) {
+      sheet.addRow([card.nom, card.status, '—', 0, 0, '', '']);
+    } else {
+      [...allTypes].forEach(type => {
+        const debut    = card.comptes.debut?.[type]    ?? 0;
+        const sortie   = card.comptes.sortie?.[type]    ?? 0;
+        const sortieF2 = card.comptes.sortieF2?.[type];
+        const diffF2F1 = card.comptes.diffF2F1?.[type];
+
+        const label = type.startsWith('part-')
+          ? type.replace('part-', '') + ' (Partenaire)'
+          : this.getAccountTypeLabel(type);
+
+        sheet.addRow([
+          card.nom, card.status, label,
+          debut, sortie,
+          sortieF2 !== undefined ? sortieF2 : '',
+          diffF2F1 !== undefined ? diffF2F1 : ''
+        ]);
+      });
+    }
+
+    // Ligne de sous-total pour le superviseur
+    const totalRow = sheet.addRow([
+      `Total ${card.nom}`, '', '',
+      card.totaux.debutTotal, card.totaux.sortieTotal, '', card.totaux.grTotal
+    ]);
+    totalRow.font = { bold: true, italic: true };
+    totalRow.eachCell(cell => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF2F2F2' } };
+    });
+
+    const endRow = sheet.lastRow.number;
+    // Fusionne la colonne "Superviseur" et "Statut" sur les lignes de détail (hors total)
+    if (endRow - 1 >= startRow) {
+      sheet.mergeCells(`A${startRow}:A${endRow - 1}`);
+      sheet.mergeCells(`B${startRow}:B${endRow - 1}`);
+      sheet.getCell(`A${startRow}`).alignment = { vertical: 'middle' };
+    }
+  });
+
+  // ── Formatage des colonnes ──────────────────────────────────────────────
+  sheet.columns = [
+    { key: 'col1', width: 22 },
+    { key: 'col2', width: 12 },
+    { key: 'col3', width: 24 },
+    { key: 'col4', width: 16 },
+    { key: 'col5', width: 16 },
+    { key: 'col6', width: 16 },
+    { key: 'col7', width: 16 }
+  ];
+
+  // Format monétaire sur les colonnes numériques du tableau détaillé
+  for (let i = tableHeaderRowNum + 1; i <= sheet.lastRow.number; i++) {
+    [4, 5, 6, 7].forEach(col => {
+      const cell = sheet.getRow(i).getCell(col);
+      if (typeof cell.value === 'number') {
+        cell.numFmt = '#,##0 "F"';
+      }
+    });
+  }
+  // Format monétaire sur le bandeau de totaux globaux (ligne 6)
+  [1, 2, 3, 4, 5].forEach(col => {
+    sheet.getRow(6).getCell(col).numFmt = '#,##0 "F"';
+  });
+
+  // 3. Retourne le buffer prêt à être envoyé en réponse HTTP
+  const buffer = await workbook.xlsx.writeBuffer();
+  return {
+    buffer,
+    filename: `dashboard-admin-${period}-${new Date().toISOString().split('T')[0]}.xlsx`
+  };
+}
 }
 
 export default new TransactionService();

@@ -128,6 +128,17 @@ router.post(
   TransactionController.testDateFilter
 );
 
+// ⚠️ IMPORTANT : la route /export DOIT être déclarée AVANT la route
+// /dashboard/admin pour éviter toute ambiguïté de matching, et dans
+// tous les cas avant le error-handling middleware (router.use à 4 args)
+// situé en bas de ce fichier.
+router.get(
+  '/dashboard/admin/export',
+  authenticateToken,
+  requireAdmin,
+  TransactionController.exportAdminDashboard
+);
+
 router.get(
   '/dashboard/admin',
   authenticateToken,
@@ -276,10 +287,6 @@ router.get('/account-types', authenticateToken, async (req, res) => {
 router.get('/admin/daily-transfer/status', TransactionController.getDailyTransferStatus);
 router.get('/admin/transactions/archived', TransactionController.getArchivedTransactions);
 
-// =====================================
-// GESTION D'ERREURS
-// =====================================
-// Ajoutez cette route après les autres routes GET
 // ✅ Route pour les types de compte (appelée par le frontend)
 router.get('/accountype', authenticateToken, async (req, res) => {
   try {
@@ -309,6 +316,12 @@ router.get('/accountype', authenticateToken, async (req, res) => {
     });
   }
 });
+
+// =====================================
+// GESTION D'ERREURS
+// =====================================
+// ⚠️ Ce middleware d'erreur (4 arguments) doit toujours rester
+// EN TOUT DERNIER dans le fichier, après toutes les routes.
 router.use((error, req, res, next) => {
   console.error('❌ Erreur transactionRoutes:', error);
 

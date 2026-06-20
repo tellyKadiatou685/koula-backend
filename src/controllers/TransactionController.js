@@ -870,7 +870,33 @@ async createAdminTransaction(req, res) {
       res.status(500).json({ success: false, message: 'Erreur lors de la récupération des dates disponibles' });
     }
   }
+// À ajouter dans TransactionController.js, juste après getAdminDashboard
 
+async exportAdminDashboard(req, res) {
+  try {
+    const { period = 'today', date } = req.query;
+
+    const { buffer, filename } = await TransactionService.exportAdminDashboardToExcel(
+      period,
+      date || null
+    );
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
+
+  } catch (error) {
+    console.error('❌ [exportAdminDashboard] Erreur:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Erreur lors de la génération du fichier Excel',
+      ...(process.env.NODE_ENV === 'development' && { details: error.message })
+    });
+  }
+}
   // Test filtrage date (ADMIN seulement)
   async testDateFilter(req, res) {
     try {
