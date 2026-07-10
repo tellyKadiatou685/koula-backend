@@ -165,6 +165,11 @@ model DailySnapshot {
   seddoFin           BigInt   @default(0)
   versementBankDebut BigInt   @default(0)
   versementBankFin   BigInt   @default(0)
+  // ── NOUVEAU : Western 2 / Ria 2 ──
+  westernUnion2Debut BigInt   @default(0)
+  westernUnion2Fin   BigInt   @default(0)
+  ria2Debut          BigInt   @default(0)
+  ria2Fin            BigInt   @default(0)
   customTypesData    Json?    @default("{}")
   user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -173,7 +178,6 @@ model DailySnapshot {
   @@index([userId, date])
   @@map("daily_snapshots")
 }
-
 model SystemConfig {
   id        String   @id @default(cuid())
   key       String   @unique
@@ -221,6 +225,8 @@ enum AccountTypeEnum {
   MONEYGRAM
   SEDDO
   VERSEMENT_BANK
+  WESTERN_2
+  RIA_2
   AUTRES
 }
 

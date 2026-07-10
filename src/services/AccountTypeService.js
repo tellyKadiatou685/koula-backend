@@ -3,7 +3,8 @@ import prisma from '../config/database.js';
 
 const FIXED_ACCOUNT_TYPES = [
   'LIQUIDE', 'ORANGE_MONEY', 'WAVE', 'UV_MASTER',
-  'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM','SEDDO', 'VERSEMENT_BANK'
+  'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM','SEDDO', 'VERSEMENT_BANK',
+  'WESTERN_2', 'RIA_2'
 ];
 
 const FIXED_ACCOUNT_TYPE_LABELS = {
@@ -17,6 +18,8 @@ const FIXED_ACCOUNT_TYPE_LABELS = {
   MONEYGRAM:     'MoneyGram',
   SEDDO:         'Seddo',
   VERSEMENT_BANK: 'Versement Bank',
+  WESTERN_2:     'Western 2',
+  RIA_2:         'Ria 2',
 };
 
 const DEFAULT_ACTIVE_TYPES = ['LIQUIDE', 'ORANGE_MONEY', 'WAVE', 'UV_MASTER'];
@@ -32,6 +35,8 @@ const DEFAULT_ENTRY_ACCESS = {
   MONEYGRAM:     'fin_only',
   SEDDO:         'debut_only',
   VERSEMENT_BANK: 'debut_only',
+  WESTERN_2:     'fin_only',
+  RIA_2:         'fin_only',
 };
 
 const ENTRY_ACCESS_KEY     = 'account_entry_access';
@@ -223,7 +228,7 @@ class AccountTypeService {
       }
       const basicTypes = ['LIQUIDE', 'ORANGE_MONEY', 'WAVE', 'UV_MASTER', 'AUTRES',
                           'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM',
-                          'SEDDO', 'VERSEMENT_BANK'];
+                          'SEDDO', 'VERSEMENT_BANK', 'WESTERN_2', 'RIA_2'];
       return basicTypes.includes(typeValue);
     }
   }
@@ -237,7 +242,7 @@ class AccountTypeService {
     // 1. Si c'est déjà un type fixe, le retourner
     const fixedTypes = ['LIQUIDE', 'ORANGE_MONEY', 'WAVE', 'UV_MASTER', 
                         'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM',
-                        'SEDDO', 'VERSEMENT_BANK', 'AUTRES'];
+                        'SEDDO', 'VERSEMENT_BANK', 'WESTERN_2', 'RIA_2', 'AUTRES'];
     
     if (fixedTypes.includes(typeUpper)) {
       return typeUpper;
@@ -351,7 +356,7 @@ class AccountTypeService {
       const access = accessMap[accountType] || 'both';
       return access === 'both' || access === 'debut_only';
     } catch {
-      return !['WESTERN_UNION', 'RIA', 'MONEYGRAM'].includes(accountType);
+      return !['WESTERN_UNION', 'RIA', 'MONEYGRAM', 'WESTERN_2', 'RIA_2'].includes(accountType);
     }
   }
 

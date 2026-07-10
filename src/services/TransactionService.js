@@ -214,15 +214,20 @@ class TransactionService {
   // ── Mapping typeToSnapshotField partagé ────────────────────────────────────
   getTypeToSnapshotField() {
     return {
-      'LIQUIDE':       ['liquideDebut',      'liquideFin'      ],
-      'ORANGE_MONEY':  ['orangeMoneyDebut',  'orangeMoneyFin'  ],
-      'WAVE':          ['waveDebut',         'waveFin'         ],
-      'UV_MASTER':     ['uvMasterDebut',     'uvMasterFin'     ],
-      'AUTRES':        ['autresDebut',       'autresFin'       ],
-      'FREE_MONEY':    ['freeMoneyDebut',    'freeMoneyFin'    ],
-      'WESTERN_UNION': ['westernUnionDebut', 'westernUnionFin' ],
-      'RIA':           ['riaDebut',          'riaFin'          ],
-      'MONEYGRAM':     ['moneygramDebut',    'moneygramFin'    ],
+      'LIQUIDE':       ['liquideDebut',       'liquideFin'       ],
+      'ORANGE_MONEY':  ['orangeMoneyDebut',   'orangeMoneyFin'   ],
+      'WAVE':          ['waveDebut',          'waveFin'          ],
+      'UV_MASTER':     ['uvMasterDebut',      'uvMasterFin'      ],
+      'AUTRES':        ['autresDebut',        'autresFin'        ],
+
+      'FREE_MONEY':    ['freeMoneyDebut',     'freeMoneyFin'     ],
+      'WESTERN_UNION': ['westernUnionDebut',  'westernUnionFin'  ],
+      'RIA':           ['riaDebut',           'riaFin'           ],
+      'MONEYGRAM':     ['moneygramDebut',     'moneygramFin'     ],
+
+      // ── NOUVEAU : Western 2 / Ria 2 (mêmes règles que WESTERN_UNION / RIA) ──
+      'WESTERN_2':     ['westernUnion2Debut', 'westernUnion2Fin' ],
+      'RIA_2':         ['ria2Debut',          'ria2Fin'          ],
     };
   }
 
@@ -230,17 +235,22 @@ class TransactionService {
   emptySnapshotData(userId, date) {
     return {
       date, userId,
-      liquideDebut:      BigInt(0), liquideFin:       BigInt(0),
-      orangeMoneyDebut:  BigInt(0), orangeMoneyFin:   BigInt(0),
-      waveDebut:         BigInt(0), waveFin:          BigInt(0),
-      uvMasterDebut:     BigInt(0), uvMasterFin:      BigInt(0),
-      autresDebut:       BigInt(0), autresFin:        BigInt(0),
-      freeMoneyDebut:    BigInt(0), freeMoneyFin:     BigInt(0),
-      westernUnionDebut: BigInt(0), westernUnionFin:  BigInt(0),
-      riaDebut:          BigInt(0), riaFin:           BigInt(0),
-      moneygramDebut:    BigInt(0), moneygramFin:     BigInt(0),
-      debutTotal:        BigInt(0), sortieTotal:      BigInt(0),
-      grTotal:           BigInt(0)
+      liquideDebut:       BigInt(0), liquideFin:        BigInt(0),
+      orangeMoneyDebut:   BigInt(0), orangeMoneyFin:    BigInt(0),
+      waveDebut:          BigInt(0), waveFin:           BigInt(0),
+      uvMasterDebut:      BigInt(0), uvMasterFin:       BigInt(0),
+      autresDebut:        BigInt(0), autresFin:         BigInt(0),
+      freeMoneyDebut:     BigInt(0), freeMoneyFin:      BigInt(0),
+      westernUnionDebut:  BigInt(0), westernUnionFin:   BigInt(0),
+      riaDebut:           BigInt(0), riaFin:            BigInt(0),
+      moneygramDebut:     BigInt(0), moneygramFin:      BigInt(0),
+
+      // ── NOUVEAU : Western 2 / Ria 2 ──
+      westernUnion2Debut: BigInt(0), westernUnion2Fin:  BigInt(0),
+      ria2Debut:          BigInt(0), ria2Fin:           BigInt(0),
+
+      debutTotal:         BigInt(0), sortieTotal:       BigInt(0),
+      grTotal:            BigInt(0)
     };
   }
 
@@ -533,6 +543,7 @@ class TransactionService {
       const DEFAULT_ENTRY_ACCESS = {
         LIQUIDE: 'both', ORANGE_MONEY: 'both', WAVE: 'both', UV_MASTER: 'both',
         FREE_MONEY: 'both', WESTERN_UNION: 'fin_only', RIA: 'fin_only', MONEYGRAM: 'fin_only',
+        WESTERN_2: 'fin_only', RIA_2: 'fin_only',
       };
       const accessMap = entryAccessConfig
         ? { ...DEFAULT_ENTRY_ACCESS, ...JSON.parse(entryAccessConfig.value) }
@@ -547,6 +558,9 @@ class TransactionService {
         WESTERN_UNION: this.convertFromInt(snapshot.westernUnionDebut),
         RIA:           this.convertFromInt(snapshot.riaDebut),
         MONEYGRAM:     this.convertFromInt(snapshot.moneygramDebut),
+        // ── NOUVEAU ──
+        WESTERN_2:     this.convertFromInt(snapshot.westernUnion2Debut),
+        RIA_2:         this.convertFromInt(snapshot.ria2Debut),
       };
       const sortie = {
         LIQUIDE:       this.convertFromInt(snapshot.liquideFin),
@@ -557,6 +571,9 @@ class TransactionService {
         WESTERN_UNION: this.convertFromInt(snapshot.westernUnionFin),
         RIA:           this.convertFromInt(snapshot.riaFin),
         MONEYGRAM:     this.convertFromInt(snapshot.moneygramFin),
+        // ── NOUVEAU ──
+        WESTERN_2:     this.convertFromInt(snapshot.westernUnion2Fin),
+        RIA_2:         this.convertFromInt(snapshot.ria2Fin),
       };
 
       const sortieF2 = {};
@@ -586,7 +603,9 @@ class TransactionService {
       // On unifie la logique en une seule boucle sur tous les types connus
       const allKnownTypes = [
         'LIQUIDE', 'ORANGE_MONEY', 'WAVE', 'UV_MASTER',
-        'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM', 'AUTRES'
+        'FREE_MONEY', 'WESTERN_UNION', 'RIA', 'MONEYGRAM', 'AUTRES',
+        // ── NOUVEAU ──
+        'WESTERN_2', 'RIA_2'
       ];
 
       for (const type of allKnownTypes) {
@@ -827,6 +846,8 @@ class TransactionService {
     };
   }
 
+  // ── MODIFIÉ : ordre des tests corrigé pour éviter que WESTERN_2/RIA_2
+  // soient mal détectés comme WESTERN_UNION/RIA (on teste les "_2" en premier) ──
   extractAccountTypeFromDescription(description) {
     if (!description) return 'LIQUIDE';
     const desc = description.toUpperCase();
@@ -835,7 +856,9 @@ class TransactionService {
     if (desc.includes('WAVE')) return 'WAVE';
     if (desc.includes('UV_MASTER') || desc.includes('UV MASTER')) return 'UV_MASTER';
     if (desc.includes('FREE')) return 'FREE_MONEY';
+    if (desc.includes('WESTERN_2') || desc.includes('WESTERN 2')) return 'WESTERN_2';
     if (desc.includes('WESTERN')) return 'WESTERN_UNION';
+    if (desc.includes('RIA_2') || desc.includes('RIA 2')) return 'RIA_2';
     if (desc.includes('RIA')) return 'RIA';
     if (desc.includes('MONEYGRAM')) return 'MONEYGRAM';
     return 'LIQUIDE';
@@ -2207,13 +2230,26 @@ class TransactionService {
     throw new Error('Fonctionnalité createPartnerTransaction à implémenter');
   }
 
+  // ── MODIFIÉ : ajout WESTERN_2 / RIA_2 ──
   getAccountTypeLabel(type, autresLabel = 'Autres') {
-    const labels = { 'LIQUIDE': 'Liquide', 'ORANGE_MONEY': 'Orange Money', 'WAVE': 'Wave', 'UV_MASTER': 'UV Master', 'FREE_MONEY': 'Free Money', 'WESTERN_UNION': 'Western Union', 'RIA': 'Ria', 'MONEYGRAM': 'MoneyGram', 'AUTRES': autresLabel };
+    const labels = {
+      'LIQUIDE': 'Liquide', 'ORANGE_MONEY': 'Orange Money', 'WAVE': 'Wave',
+      'UV_MASTER': 'UV Master', 'FREE_MONEY': 'Free Money',
+      'WESTERN_UNION': 'Western Union', 'RIA': 'Ria', 'MONEYGRAM': 'MoneyGram',
+      'WESTERN_2': 'Western Union 2', 'RIA_2': 'Ria 2',
+      'AUTRES': autresLabel
+    };
     return labels[type] || type;
   }
 
+  // ── MODIFIÉ : ajout WESTERN_2 / RIA_2 ──
   getAccountTypeIcon(type) {
-    const icons = { 'LIQUIDE': '💵', 'ORANGE_MONEY': '📱', 'WAVE': '🌊', 'UV_MASTER': '⭐', 'FREE_MONEY': '📲', 'WESTERN_UNION': '🌍', 'RIA': '💳', 'MONEYGRAM': '💰', 'AUTRES': '📦' };
+    const icons = {
+      'LIQUIDE': '💵', 'ORANGE_MONEY': '📱', 'WAVE': '🌊', 'UV_MASTER': '⭐',
+      'FREE_MONEY': '📲', 'WESTERN_UNION': '🌍', 'RIA': '💳', 'MONEYGRAM': '💰',
+      'WESTERN_2': '🌎', 'RIA_2': '💵',
+      'AUTRES': '📦'
+    };
     return icons[type] || '📦';
   }
 
@@ -2436,7 +2472,10 @@ async getInternationalLive(dateStr) {
     const totauxParOp = {
       WESTERN_UNION: { debut: 0, fin: 0, gr: 0 },
       RIA: { debut: 0, fin: 0, gr: 0 },
-      MONEYGRAM: { debut: 0, fin: 0, gr: 0 }
+      MONEYGRAM: { debut: 0, fin: 0, gr: 0 },
+      // ── NOUVEAU ──
+      WESTERN_2: { debut: 0, fin: 0, gr: 0 },
+      RIA_2: { debut: 0, fin: 0, gr: 0 }
     };
     
     const detailSups = [];
@@ -2450,7 +2489,10 @@ async getInternationalLive(dateStr) {
       const ops = {
         WESTERN_UNION: { debut: 0, fin: 0, gr: 0 },
         RIA: { debut: 0, fin: 0, gr: 0 },
-        MONEYGRAM: { debut: 0, fin: 0, gr: 0 }
+        MONEYGRAM: { debut: 0, fin: 0, gr: 0 },
+        // ── NOUVEAU ──
+        WESTERN_2: { debut: 0, fin: 0, gr: 0 },
+        RIA_2: { debut: 0, fin: 0, gr: 0 }
       };
       
       for (const account of accounts) {
@@ -2479,9 +2521,12 @@ async getInternationalLive(dateStr) {
     }
     
     const totalGlobal = {
-      debut: totauxParOp.WESTERN_UNION.debut + totauxParOp.RIA.debut + totauxParOp.MONEYGRAM.debut,
-      fin: totauxParOp.WESTERN_UNION.fin + totauxParOp.RIA.fin + totauxParOp.MONEYGRAM.fin,
+      debut: totauxParOp.WESTERN_UNION.debut + totauxParOp.RIA.debut + totauxParOp.MONEYGRAM.debut
+           + totauxParOp.WESTERN_2.debut  + totauxParOp.RIA_2.debut,
+      fin: totauxParOp.WESTERN_UNION.fin + totauxParOp.RIA.fin + totauxParOp.MONEYGRAM.fin
+         + totauxParOp.WESTERN_2.fin    + totauxParOp.RIA_2.fin,
       gr: totauxParOp.WESTERN_UNION.gr + totauxParOp.RIA.gr + totauxParOp.MONEYGRAM.gr
+        + totauxParOp.WESTERN_2.gr     + totauxParOp.RIA_2.gr
     };
 
     return {
