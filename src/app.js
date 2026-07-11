@@ -4,7 +4,8 @@ import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
 
 import userRoutes from './routes/userRoutes.js';
-import TransactionRoute from './routes/transactionRoutes.js';
+import PastTransactionRoute from './routes/pastTransaction.routes.js';
+import TransactionRoute  from './routes/transactionRoutes.js';
 import RecentTransactionRoutes from './routes/recentTransactionRoutes.js';
 import AccountLines from './routes/accountLines.js';
 import AccountTypes from './routes/accoutTypeRoutes.js';
@@ -12,6 +13,7 @@ import cronHandler from '../api/cron.js';
 import partner from './routes/partnerBalanceRoutes.js';
 import cumulRoutes from './routes/cumulRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
+import dateRangeRoutes from './routes/dateRange.routes.js';
 
 const app = express();
 
@@ -48,7 +50,7 @@ const corsOptions = {
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
   exposedHeaders: ['Set-Cookie'],
   maxAge: 86400,
-  optionsSuccessStatus: 204,  // ← 204 au lieu de 200
+  optionsSuccessStatus: 204,  
 };
 
 // ── 1. CORS middleware
@@ -125,12 +127,14 @@ app.get('/api/debug-env', (req, res) => res.json({
 
 app.use('/api/users',           userRoutes);
 app.use('/api/transactions',    TransactionRoute);
+app.use('/api/transactions',    PastTransactionRoute);
 app.use('/api/recent',          RecentTransactionRoutes);
 app.use('/api/account-lines',   AccountLines);
 app.use('/api/accountype',      AccountTypes);
 app.use('/api/partner-balance', partner);
 app.use('/api/cumul', cumulRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/transactions', dateRangeRoutes);   // ← AJOUT
 
 app.get('/api/test-auth', (req, res) => res.json({
   message: 'Route accessible',
