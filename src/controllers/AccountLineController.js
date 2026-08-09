@@ -76,6 +76,61 @@ function handleControllerError(res, error, context = '') {
   });
 }
 
+// ─── MAPPING UNIQUE : type de compte fixe → colonnes DailySnapshot ────────────
+// ⚠️ Ce mapping DOIT rester synchronisé avec le modèle `DailySnapshot` du
+// schema.prisma. Chaque type de AccountTypeEnum doit avoir une entrée ici,
+// sinon la modification/suppression sur une date passée échouera avec
+// "Type de compte non supporté dans le snapshot".
+const SNAPSHOT_FIELD_MAP = {
+  debut: {
+    LIQUIDE:        'liquideDebut',
+    ORANGE_MONEY:   'orangeMoneyDebut',
+    WAVE:           'waveDebut',
+    UV_MASTER:      'uvMasterDebut',
+    FREE_MONEY:     'freeMoneyDebut',
+    WESTERN_UNION:  'westernUnionDebut',
+    RIA:            'riaDebut',
+    MONEYGRAM:      'moneygramDebut',
+    SEDDO:          'seddoDebut',
+    VERSEMENT_BANK: 'versementBankDebut',
+    WESTERN_2:      'westernUnion2Debut',
+    RIA_2:          'ria2Debut',
+    AUTRES:         'autresDebut'
+  },
+  sortie: {
+    LIQUIDE:        'liquideFin',
+    ORANGE_MONEY:   'orangeMoneyFin',
+    WAVE:           'waveFin',
+    UV_MASTER:      'uvMasterFin',
+    FREE_MONEY:     'freeMoneyFin',
+    WESTERN_UNION:  'westernUnionFin',
+    RIA:            'riaFin',
+    MONEYGRAM:      'moneygramFin',
+    SEDDO:          'seddoFin',
+    VERSEMENT_BANK: 'versementBankFin',
+    WESTERN_2:      'westernUnion2Fin',
+    RIA_2:          'ria2Fin',
+    AUTRES:         'autresFin'
+  },
+  // ── F2 (finSecondaire) : uniquement pertinent côté "sortie" (fin) ──
+  // Miroir des colonnes ci-dessus, suffixées FinSecondaire dans le schema.
+  sortieF2: {
+    LIQUIDE:        'liquideFinSecondaire',
+    ORANGE_MONEY:   'orangeMoneyFinSecondaire',
+    WAVE:           'waveFinSecondaire',
+    UV_MASTER:      'uvMasterFinSecondaire',
+    FREE_MONEY:     'freeMoneyFinSecondaire',
+    WESTERN_UNION:  'westernUnionFinSecondaire',
+    RIA:            'riaFinSecondaire',
+    MONEYGRAM:      'moneygramFinSecondaire',
+    SEDDO:          'seddoFinSecondaire',
+    VERSEMENT_BANK: 'versementBankFinSecondaire',
+    WESTERN_2:      'westernUnion2FinSecondaire',
+    RIA_2:          'ria2FinSecondaire',
+    AUTRES:         'autresFinSecondaire'
+  }
+};
+
 class AccountLineController {
 
   // =====================================
@@ -250,34 +305,50 @@ class AccountLineController {
         const oldValue = lineType === 'debut'
           ? Number(account.initialBalance) / 100
           : Number(account.balance) / 100;
+        // F2 (finSecondaire) : uniquement pertinent pour la ligne "sortie" (fin)
+        const oldValueF2 = lineType === 'sortie' ? Number(account.finSecondaire) / 100 : null;
 
-        if (oldValue === 0) throw new Error('Cette ligne est déjà à zéro, rien à supprimer');
+        if (oldValue === 0 && (oldValueF2 === null || oldValueF2 === 0))
+          throw new Error('Cette ligne est déjà à zéro, rien à supprimer');
 
         await prisma.account.update({
           where: { id: account.id },
-          data: lineType === 'debut' ? { initialBalance: 0n } : { balance: 0n }
+          data: lineType === 'debut'
+            ? { initialBalance: 0n }
+            : { balance: 0n, finSecondaire: 0n } // ← F2 remis à 0 en même temps que F
         });
 
         await prisma.transaction.create({
           data: {
             montant: BigInt(Math.round(oldValue * 100)),
             type: 'AUDIT_SUPPRESSION',
-            description: `Suppression ligne ${accountKey} (${lineType}) - ${oldValue} F`,
+            description: lineType === 'sortie'
+              ? `Suppression ligne ${accountKey} (${lineType}) - ${oldValue} F | F2 : ${oldValueF2} F → 0 F`
+              : `Suppression ligne ${accountKey} (${lineType}) - ${oldValue} F`,
             envoyeurId: deletedBy,
             destinataireId: supervisorId,
             compteDestinationId: account.id,
-            metadata: JSON.stringify({ action: 'DELETE_ACCOUNT_LINE', lineType, accountKey, oldValue, deletedBy, deletedAt: new Date().toISOString() })
+            metadata: JSON.stringify({
+              action: 'DELETE_ACCOUNT_LINE', lineType, accountKey, oldValue,
+              ...(lineType === 'sortie' && { oldValueF2, newValueF2: 0 }),
+              deletedBy, deletedAt: new Date().toISOString()
+            })
           }
         });
 
         await NotificationService.createNotification({
           userId: supervisorId,
           title: 'Ligne de compte supprimée',
-          message: `Ligne ${accountKey} (${lineType === 'debut' ? 'début' : 'sortie'}) de ${oldValue} F supprimée`,
+          message: lineType === 'sortie'
+            ? `Ligne ${accountKey} (sortie) de ${oldValue} F supprimée (F2 : ${oldValueF2} F → 0 F)`
+            : `Ligne ${accountKey} (début) de ${oldValue} F supprimée`,
           type: 'AUDIT_SUPPRESSION'
         });
 
-        result = { accountId: account.id, accountKey, lineType, oldValue, newValue: 0 };
+        result = {
+          accountId: account.id, accountKey, lineType, oldValue, newValue: 0,
+          ...(lineType === 'sortie' && { oldValueF2, newValueF2: 0 })
+        };
       }
     }
 
@@ -447,24 +518,16 @@ class AccountLineController {
 
     if (!snapshot) throw new Error(`Aucun snapshot trouvé pour cette date`);
 
-    const fieldMap = {
-      debut: {
-        LIQUIDE: 'liquideDebut', ORANGE_MONEY: 'orangeMoneyDebut',
-        WAVE: 'waveDebut', UV_MASTER: 'uvMasterDebut', AUTRES: 'autresDebut',
-        FREE_MONEY: 'autresDebut', WESTERN_UNION: 'autresDebut', RIA: 'autresDebut', MONEYGRAM: 'autresDebut'
-      },
-      sortie: {
-        LIQUIDE: 'liquideFin', ORANGE_MONEY: 'orangeMoneyFin',
-        WAVE: 'waveFin', UV_MASTER: 'uvMasterFin', AUTRES: 'autresFin',
-        FREE_MONEY: 'autresFin', WESTERN_UNION: 'autresFin', RIA: 'autresFin', MONEYGRAM: 'autresFin'
-      }
-    };
-
-    const field = fieldMap[lineType]?.[accountKey];
+    const field = SNAPSHOT_FIELD_MAP[lineType]?.[accountKey];
     if (!field) throw new Error(`Type de compte ${accountKey} non supporté dans le snapshot`);
 
+    // F2 (finSecondaire) : uniquement pertinent côté "sortie"
+    const fieldF2 = lineType === 'sortie' ? SNAPSHOT_FIELD_MAP.sortieF2[accountKey] : null;
+
     const oldValue = Number(snapshot[field]) / 100;
-    if (oldValue === 0) throw new Error('Cette ligne est déjà à zéro, rien à supprimer');
+    const oldValueF2 = fieldF2 ? Number(snapshot[fieldF2]) / 100 : null;
+    if (oldValue === 0 && (oldValueF2 === null || oldValueF2 === 0))
+      throw new Error('Cette ligne est déjà à zéro, rien à supprimer');
 
     const oldDebutTotal  = Number(snapshot.debutTotal) / 100;
     const oldSortieTotal = Number(snapshot.sortieTotal) / 100;
@@ -476,6 +539,7 @@ class AccountLineController {
       where: { userId_date: { userId: supervisorId, date: snapshotDate } },
       data: {
         [field]: 0n,
+        ...(fieldF2 && { [fieldF2]: 0n }), // ← F2 remis à 0 en même temps que F
         debutTotal:  BigInt(Math.round(newDebutTotal  * 100)),
         sortieTotal: BigInt(Math.round(newSortieTotal * 100)),
         grTotal:     BigInt(Math.round(newGrTotal     * 100))
@@ -486,21 +550,33 @@ class AccountLineController {
       data: {
         montant: BigInt(Math.round(oldValue * 100)),
         type: 'AUDIT_SUPPRESSION',
-        description: `Suppression ligne passée ${accountKey} (${lineType}) du ${targetDate} - ${oldValue} F`,
+        description: fieldF2
+          ? `Suppression ligne passée ${accountKey} (${lineType}) du ${targetDate} - ${oldValue} F | F2 : ${oldValueF2} F → 0 F`
+          : `Suppression ligne passée ${accountKey} (${lineType}) du ${targetDate} - ${oldValue} F`,
         envoyeurId: deletedBy,
         destinataireId: supervisorId,
-        metadata: JSON.stringify({ action: 'DELETE_PAST_ACCOUNT_LINE', lineType, accountKey, oldValue, targetDate, deletedBy, deletedAt: new Date().toISOString() })
+        metadata: JSON.stringify({
+          action: 'DELETE_PAST_ACCOUNT_LINE', lineType, accountKey, oldValue,
+          ...(fieldF2 && { oldValueF2, newValueF2: 0 }),
+          targetDate, deletedBy, deletedAt: new Date().toISOString()
+        })
       }
     });
 
     await NotificationService.createNotification({
       userId: supervisorId,
       title: 'Ligne passée supprimée',
-      message: `Ligne ${accountKey} (${lineType}) du ${targetDate} : ${oldValue} F supprimée`,
+      message: fieldF2
+        ? `Ligne ${accountKey} (${lineType}) du ${targetDate} : ${oldValue} F supprimée (F2 : ${oldValueF2} F → 0 F)`
+        : `Ligne ${accountKey} (${lineType}) du ${targetDate} : ${oldValue} F supprimée`,
       type: 'AUDIT_SUPPRESSION'
     });
 
-    return { accountKey, lineType, targetDate, oldValue, newValue: 0, source: 'snapshot' };
+    return {
+      accountKey, lineType, targetDate, oldValue, newValue: 0,
+      ...(fieldF2 && { oldValueF2, newValueF2: 0 }),
+      source: 'snapshot'
+    };
   }
 
   // =====================================
@@ -510,7 +586,7 @@ class AccountLineController {
   updateAccountLine = async (req, res) => {
     try {
       const { supervisorId, lineType } = req.params;
-      const { accountKey, newValue, targetDate } = req.body;
+      const { accountKey, newValue, newValueF2, targetDate } = req.body;
       const userId = req.user.id;
 
       if (!accountKey)
@@ -528,6 +604,15 @@ class AccountLineController {
       const newValueFloat = parseFloat(newValue);
       if (isNaN(newValueFloat) || newValueFloat < 0)
         return res.status(400).json({ success: false, message: 'newValue doit être un nombre positif ou zéro' });
+
+      // F2 (finSecondaire) : uniquement envoyé/valide pour la ligne "sortie"
+      const hasF2Update = normalizedLineType === 'sortie' && newValueF2 !== undefined && newValueF2 !== null && newValueF2 !== '';
+      let newValueF2Float = null;
+      if (hasF2Update) {
+        newValueF2Float = parseFloat(newValueF2);
+        if (isNaN(newValueF2Float) || newValueF2Float < 0)
+          return res.status(400).json({ success: false, message: 'newValueF2 doit être un nombre positif ou zéro' });
+      }
 
       if (targetDate && this.isPastDate(targetDate) && req.user.role !== 'ADMIN')
         return res.status(403).json({ success: false, message: 'Seul un administrateur peut modifier des données passées' });
@@ -551,7 +636,7 @@ class AccountLineController {
         }
       } else {
         if (isPast) {
-          result = await this.updatePastFixedAccountLine(supervisorId, lineType, accountKey, newValueFloat, userId, targetDate);
+          result = await this.updatePastFixedAccountLine(supervisorId, lineType, accountKey, newValueFloat, userId, targetDate, hasF2Update ? newValueF2Float : null);
         } else {
           const account = await prisma.account.findFirst({
             where: { userId: supervisorId, type: accountKey }
@@ -562,34 +647,53 @@ class AccountLineController {
           const oldValue = lineType === 'debut'
             ? Number(account.initialBalance) / 100
             : Number(account.balance) / 100;
+          const oldValueF2 = lineType === 'sortie' ? Number(account.finSecondaire) / 100 : null;
 
           const newValueCentimes = BigInt(Math.round(newValueFloat * 100));
 
+          const updateData = lineType === 'debut'
+            ? { initialBalance: newValueCentimes }
+            : { balance: newValueCentimes };
+          if (hasF2Update) {
+            updateData.finSecondaire = BigInt(Math.round(newValueF2Float * 100)); // ← F2 modifié avec F
+          }
+
           await prisma.account.update({
             where: { id: account.id },
-            data: lineType === 'debut' ? { initialBalance: newValueCentimes } : { balance: newValueCentimes }
+            data: updateData
           });
 
           await prisma.transaction.create({
             data: {
               montant: BigInt(Math.abs(Math.round((newValueFloat - oldValue) * 100))),
               type: 'AUDIT_MODIFICATION',
-              description: `Modification ${accountKey} (${lineType}) : ${oldValue} F → ${newValueFloat} F`,
+              description: hasF2Update
+                ? `Modification ${accountKey} (${lineType}) : ${oldValue} F → ${newValueFloat} F | F2 : ${oldValueF2} F → ${newValueF2Float} F`
+                : `Modification ${accountKey} (${lineType}) : ${oldValue} F → ${newValueFloat} F`,
               envoyeurId: userId,
               destinataireId: supervisorId,
               compteDestinationId: account.id,
-              metadata: JSON.stringify({ action: 'UPDATE_ACCOUNT_LINE', lineType, accountKey, oldValue, newValue: newValueFloat, updatedBy: userId, updatedByRole: req.user.role, updatedAt: new Date().toISOString() })
+              metadata: JSON.stringify({
+                action: 'UPDATE_ACCOUNT_LINE', lineType, accountKey, oldValue, newValue: newValueFloat,
+                ...(hasF2Update && { oldValueF2, newValueF2: newValueF2Float }),
+                updatedBy: userId, updatedByRole: req.user.role, updatedAt: new Date().toISOString()
+              })
             }
           });
 
           await NotificationService.createNotification({
             userId: supervisorId,
             title: 'Ligne de compte modifiée',
-            message: `${accountKey} (${lineType === 'debut' ? 'début' : 'sortie'}) : ${oldValue} F → ${newValueFloat} F`,
+            message: hasF2Update
+              ? `${accountKey} (${lineType === 'debut' ? 'début' : 'sortie'}) : ${oldValue} F → ${newValueFloat} F | F2 : ${oldValueF2} F → ${newValueF2Float} F`
+              : `${accountKey} (${lineType === 'debut' ? 'début' : 'sortie'}) : ${oldValue} F → ${newValueFloat} F`,
             type: 'AUDIT_MODIFICATION'
           });
 
-          result = { accountId: account.id, accountKey, lineType, oldValue, newValue: newValueFloat };
+          result = {
+            accountId: account.id, accountKey, lineType, oldValue, newValue: newValueFloat,
+            ...(hasF2Update && { oldValueF2, newValueF2: newValueF2Float })
+          };
         }
       }
 
@@ -899,9 +1003,7 @@ class AccountLineController {
 
   // =====================================
   // UPDATE COMPTE FIXE — DATE PASSÉE
-  // =====================================
-
-  updatePastFixedAccountLine = async (supervisorId, lineType, accountKey, newValue, updatedBy, targetDate) => {
+  updatePastFixedAccountLine = async (supervisorId, lineType, accountKey, newValue, updatedBy, targetDate, newValueF2 = null) => {
     const snapshotDate = new Date(targetDate);
     snapshotDate.setHours(0, 0, 0, 0);
 
@@ -911,21 +1013,12 @@ class AccountLineController {
 
     if (!snapshot) throw new Error(`Aucun snapshot trouvé pour cette date`);
 
-    const fieldMap = {
-      debut: {
-        LIQUIDE: 'liquideDebut', ORANGE_MONEY: 'orangeMoneyDebut',
-        WAVE: 'waveDebut', UV_MASTER: 'uvMasterDebut', AUTRES: 'autresDebut',
-        FREE_MONEY: 'autresDebut', WESTERN_UNION: 'autresDebut', RIA: 'autresDebut', MONEYGRAM: 'autresDebut'
-      },
-      sortie: {
-        LIQUIDE: 'liquideFin', ORANGE_MONEY: 'orangeMoneyFin',
-        WAVE: 'waveFin', UV_MASTER: 'uvMasterFin', AUTRES: 'autresFin',
-        FREE_MONEY: 'autresFin', WESTERN_UNION: 'autresFin', RIA: 'autresFin', MONEYGRAM: 'autresFin'
-      }
-    };
-
-    const field = fieldMap[lineType]?.[accountKey];
+    const field = SNAPSHOT_FIELD_MAP[lineType]?.[accountKey];
     if (!field) throw new Error(`Type de compte ${accountKey} non supporté dans le snapshot`);
+
+    const fieldF2 = lineType === 'sortie' ? SNAPSHOT_FIELD_MAP.sortieF2[accountKey] : null;
+    const hasF2Update = fieldF2 !== null && newValueF2 !== null && newValueF2 !== undefined;
+    const oldValueF2 = fieldF2 ? Number(snapshot[fieldF2]) / 100 : null;
 
     const oldValue = Number(snapshot[field]) / 100;
     const delta = newValue - oldValue;
@@ -940,41 +1033,76 @@ class AccountLineController {
       where: { userId_date: { userId: supervisorId, date: snapshotDate } },
       data: {
         [field]: BigInt(Math.round(newValue * 100)),
+        ...(hasF2Update && { [fieldF2]: BigInt(Math.round(newValueF2 * 100)) }),
         debutTotal:  BigInt(Math.round(newDebutTotal  * 100)),
         sortieTotal: BigInt(Math.round(newSortieTotal * 100)),
         grTotal:     BigInt(Math.round(newGrTotal     * 100))
       }
     });
 
+    // ── NOUVEAU : synchroniser la clé systemConfig snapshot_f2_*, qui est
+    // la SEULE source lue par getSnapshotForDate() pour afficher F2 sur
+    // les dates passées. Sans ça, l'écriture ci-dessus est invisible.
+    if (hasF2Update) {
+      const dateStr = snapshotDate.toISOString().split('T')[0];
+      const f2Key = `snapshot_f2_${supervisorId}_${dateStr}`;
+      const f2Config = await prisma.systemConfig.findFirst({ where: { key: f2Key } });
+      const f2Data = f2Config?.value ? JSON.parse(f2Config.value) : {};
+
+      const f2Centimes = Math.round(newValueF2 * 100);
+      if (f2Centimes > 0) {
+        f2Data[accountKey] = String(f2Centimes);
+      } else {
+        delete f2Data[accountKey];
+      }
+
+      await prisma.systemConfig.upsert({
+        where:  { key: f2Key },
+        update: { value: JSON.stringify(f2Data) },
+        create: { key: f2Key, value: JSON.stringify(f2Data) }
+      });
+      console.log(`✅ [F2 SYNC] ${f2Key} mis à jour:`, f2Data);
+    }
+
     await prisma.transaction.create({
       data: {
         montant: BigInt(Math.abs(Math.round(delta * 100))),
         type: 'AUDIT_MODIFICATION',
-        description: `Modification passée ${accountKey} (${lineType}) du ${targetDate} : ${oldValue} F → ${newValue} F`,
+        description: hasF2Update
+          ? `Modification passée ${accountKey} (${lineType}) du ${targetDate} : ${oldValue} F → ${newValue} F | F2 : ${oldValueF2} F → ${newValueF2} F`
+          : `Modification passée ${accountKey} (${lineType}) du ${targetDate} : ${oldValue} F → ${newValue} F`,
         envoyeurId: updatedBy,
         destinataireId: supervisorId,
-        metadata: JSON.stringify({ action: 'UPDATE_PAST_ACCOUNT_LINE', lineType, accountKey, oldValue, newValue, targetDate, updatedBy, updatedAt: new Date().toISOString() })
+        metadata: JSON.stringify({
+          action: 'UPDATE_PAST_ACCOUNT_LINE', lineType, accountKey, oldValue, newValue,
+          ...(hasF2Update && { oldValueF2, newValueF2 }),
+          targetDate, updatedBy, updatedAt: new Date().toISOString()
+        })
       }
     });
 
     await NotificationService.createNotification({
       userId: supervisorId,
       title: 'Ligne passée modifiée',
-      message: `${accountKey} (${lineType}) du ${targetDate} : ${oldValue} F → ${newValue} F`,
+      message: hasF2Update
+        ? `${accountKey} (${lineType}) du ${targetDate} : ${oldValue} F → ${newValue} F | F2 : ${oldValueF2} F → ${newValueF2} F`
+        : `${accountKey} (${lineType}) du ${targetDate} : ${oldValue} F → ${newValue} F`,
       type: 'AUDIT_MODIFICATION'
     });
 
-    return { accountKey, lineType, targetDate, oldValue, newValue, source: 'snapshot' };
+    return {
+      accountKey, lineType, targetDate, oldValue, newValue,
+      ...(hasF2Update && { oldValueF2, newValueF2 }),
+      source: 'snapshot'
+    };
   }
-
-  // =====================================
   // RESET
   // =====================================
 
   resetAccountLine = async (req, res) => {
     try {
       const { supervisorId, lineType } = req.params;
-      const { accountKey, newValue = 0 } = req.body;
+      const { accountKey, newValue = 0, newValueF2 = 0 } = req.body;
       const userId = req.user.id;
 
       if (!accountKey)
@@ -982,9 +1110,12 @@ class AccountLineController {
 
       // Normaliser "fin" → "sortie"
       if (lineType === 'fin') req.params.lineType = 'sortie';
+      const normalizedLineType = lineType === 'fin' ? 'sortie' : lineType;
 
       if (newValue < 0)
         return res.status(400).json({ success: false, message: 'Valeur négative non autorisée' });
+      if (normalizedLineType === 'sortie' && newValueF2 < 0)
+        return res.status(400).json({ success: false, message: 'Valeur F2 négative non autorisée' });
 
       const perm = await this.checkResetPermissions(req.user, supervisorId, accountKey);
       if (!perm.allowed)
@@ -1065,35 +1196,53 @@ class AccountLineController {
       const oldValue = lineType === 'debut'
         ? Number(account.initialBalance) / 100
         : Number(account.balance) / 100;
+      const oldValueF2 = normalizedLineType === 'sortie' ? Number(account.finSecondaire) / 100 : null;
+      const newValueF2Centimes = Math.round(newValueF2 * 100);
+
+      const updateData = lineType === 'debut'
+        ? { initialBalance: BigInt(newValueCentimes) }
+        : { balance: BigInt(newValueCentimes), finSecondaire: BigInt(newValueF2Centimes) }; // ← F2 réinitialisé avec F
 
       await prisma.account.update({
         where: { id: account.id },
-        data: lineType === 'debut' ? { initialBalance: BigInt(newValueCentimes) } : { balance: BigInt(newValueCentimes) }
+        data: updateData
       });
 
       await prisma.transaction.create({
         data: {
           montant: BigInt(Math.abs(newValueCentimes)),
           type: 'AUDIT_MODIFICATION',
-          description: `Reset ${accountKey} (${lineType}) - ${oldValue} F → ${newValue} F`,
+          description: normalizedLineType === 'sortie'
+            ? `Reset ${accountKey} (${lineType}) - ${oldValue} F → ${newValue} F | F2 : ${oldValueF2} F → ${newValueF2} F`
+            : `Reset ${accountKey} (${lineType}) - ${oldValue} F → ${newValue} F`,
           envoyeurId: userId,
           destinataireId: supervisorId,
           compteDestinationId: account.id,
-          metadata: JSON.stringify({ action: 'RESET_ACCOUNT_LINE', lineType, accountKey, oldValue, newValue, resetBy: userId, resetByRole: req.user.role, resetAt: new Date().toISOString() })
+          metadata: JSON.stringify({
+            action: 'RESET_ACCOUNT_LINE', lineType, accountKey, oldValue, newValue,
+            ...(normalizedLineType === 'sortie' && { oldValueF2, newValueF2 }),
+            resetBy: userId, resetByRole: req.user.role, resetAt: new Date().toISOString()
+          })
         }
       });
 
       await NotificationService.createNotification({
         userId: supervisorId,
         title: 'Compte réinitialisé',
-        message: `${accountKey} (${lineType === 'debut' ? 'début' : 'sortie'}) réinitialisé : ${oldValue} F → ${newValue} F`,
+        message: normalizedLineType === 'sortie'
+          ? `${accountKey} (sortie) réinitialisé : ${oldValue} F → ${newValue} F | F2 : ${oldValueF2} F → ${newValueF2} F`
+          : `${accountKey} (début) réinitialisé : ${oldValue} F → ${newValue} F`,
         type: 'AUDIT_MODIFICATION'
       });
 
       res.json({
         success: true,
         message: `Compte ${accountKey} (${lineType}) réinitialisé`,
-        data: { accountKey, lineType, oldValue, newValue, resetAt: new Date(), supervisor: supervisor.nomComplet }
+        data: {
+          accountKey, lineType, oldValue, newValue,
+          ...(normalizedLineType === 'sortie' && { oldValueF2, newValueF2 }),
+          resetAt: new Date(), supervisor: supervisor.nomComplet
+        }
       });
 
     } catch (error) {

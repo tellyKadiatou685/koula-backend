@@ -2,7 +2,7 @@
 //
 // Service dédié au calcul des totaux CUMULÉS d'un superviseur sur une
 // PLAGE de dates (ex: du 3 au 5 juillet). Additionne les DailySnapshot
-// de chaque jour de la plage, par type de compte (début + fin).
+// de chaque jour de la plage, par type de compte (début + fin + F2).
 //
 // Fichier isolé : ne modifie ni ne dépend de TransactionService.js.
 
@@ -22,7 +22,8 @@ class DateRangeService {
 
   /**
    * Mapping type de compte → champs du DailySnapshot.
-   * Doit rester synchronisé avec TransactionService.getTypeToSnapshotField().
+   * Doit rester synchronisé avec TransactionService.getTypeToSnapshotField()
+   * ET avec AccountLineController.SNAPSHOT_FIELD_MAP.
    */
   getTypeToSnapshotField() {
     return {
@@ -37,6 +38,28 @@ class DateRangeService {
       MONEYGRAM:     ['moneygramDebut',     'moneygramFin'     ],
       WESTERN_2:     ['westernUnion2Debut', 'westernUnion2Fin' ],
       RIA_2:         ['ria2Debut',          'ria2Fin'          ],
+    };
+  }
+
+  /**
+   * Mapping type de compte → champ F2 (finSecondaire) du DailySnapshot.
+   * F2 n'existe que côté "fin" (pas de F2 pour "début").
+   */
+  getTypeToSnapshotFieldF2() {
+    return {
+      LIQUIDE:        'liquideFinSecondaire',
+      ORANGE_MONEY:   'orangeMoneyFinSecondaire',
+      WAVE:           'waveFinSecondaire',
+      UV_MASTER:      'uvMasterFinSecondaire',
+      AUTRES:         'autresFinSecondaire',
+      FREE_MONEY:     'freeMoneyFinSecondaire',
+      WESTERN_UNION:  'westernUnionFinSecondaire',
+      RIA:            'riaFinSecondaire',
+      MONEYGRAM:      'moneygramFinSecondaire',
+      SEDDO:          'seddoFinSecondaire',
+      VERSEMENT_BANK: 'versementBankFinSecondaire',
+      WESTERN_2:      'westernUnion2FinSecondaire',
+      RIA_2:          'ria2FinSecondaire',
     };
   }
 
@@ -69,7 +92,8 @@ class DateRangeService {
 
   /**
    * Additionne, pour un superviseur, tous les DailySnapshot compris
-   * entre startDateStr et endDateStr (inclus), par type de compte.
+   * entre startDateStr et endDateStr (inclus), par type de compte,
+   * pour début, fin, et F2 (finSecondaire, côté fin uniquement).
    */
   async getSupervisorRangeTotals(supervisorId, startDateStr, endDateStr) {
     const supervisor = await prisma.user.findFirst({
@@ -85,9 +109,11 @@ class DateRangeService {
       orderBy: { date: 'asc' }
     });
 
-    const fieldMap = this.getTypeToSnapshotField();
-    const debut  = {};
-    const sortie = {};
+    const fieldMap   = this.getTypeToSnapshotField();
+    const fieldMapF2 = this.getTypeToSnapshotFieldF2();
+    const debut    = {};
+    const sortie   = {};
+    const sortieF2 = {}; // ── NOUVEAU : cumul F2 par type
     const add = (bucket, type, val) => {
       if (!val) return;
       bucket[type] = (bucket[type] || 0) + val;
@@ -103,10 +129,17 @@ class DateRangeService {
     // debutTotal/sortieTotal une seule fois à la fin, en sommant les objets
     // `debut`/`sortie` qu'on construit nous-mêmes ici (comptes + slots
     // extra + partenaires, chacun ajouté une seule fois via `add`).
+    // F2 (sortieF2) reste un cumul à part : il n'entre PAS dans
+    // debutTotal/sortieTotal/grTotal (comme pour le F2 "aujourd'hui" sur
+    // Account.finSecondaire, c'est une donnée parallèle, pas une variation
+    // de trésorerie officielle).
     for (const snap of snapshots) {
       for (const [type, [debutField, finField]] of Object.entries(fieldMap)) {
         add(debut,  type, this.convertFromInt(snap[debutField]));
         add(sortie, type, this.convertFromInt(snap[finField]));
+      }
+      for (const [type, finF2Field] of Object.entries(fieldMapF2)) {
+        add(sortieF2, type, this.convertFromInt(snap[finF2Field]));
       }
 
       // Slots custom AUTRES_* sauvegardés en dehors des champs fixes
@@ -120,12 +153,16 @@ class DateRangeService {
             if (fieldMap[type]) continue; // déjà traité ci-dessus
             add(debut,  type, this.convertFromInt(BigInt(values.debut || 0)));
             add(sortie, type, this.convertFromInt(BigInt(values.fin   || 0)));
+            if (values.finSecondaire !== undefined) {
+              add(sortieF2, type, this.convertFromInt(BigInt(values.finSecondaire || 0)));
+            }
           }
         } catch (_) { /* ignore JSON invalide */ }
       }
     }
 
     // ── Partenaires : transactions archivées dans la plage, cumulées par nom ──
+    // Note : les partenaires n'ont pas de F2 (concept propre aux comptes fixes).
     const dayEnd = new Date(end);
     dayEnd.setHours(23, 59, 59, 999);
 
@@ -160,9 +197,10 @@ class DateRangeService {
     }
 
     // ── Calcul final unique des totaux, à partir des objets déjà agrégés ──
-    const debutTotal  = Object.values(debut).reduce((sum, v) => sum + v, 0);
-    const sortieTotal = Object.values(sortie).reduce((sum, v) => sum + v, 0);
-    const grTotal      = sortieTotal - debutTotal;
+    const debutTotal    = Object.values(debut).reduce((sum, v) => sum + v, 0);
+    const sortieTotal   = Object.values(sortie).reduce((sum, v) => sum + v, 0);
+    const sortieF2Total = Object.values(sortieF2).reduce((sum, v) => sum + v, 0);
+    const grTotal       = sortieTotal - debutTotal;
 
     return {
       superviseur: { id: supervisor.id, nom: supervisor.nomComplet, status: supervisor.status },
@@ -170,14 +208,15 @@ class DateRangeService {
       endDate:   end.toISOString().split('T')[0],
       daysFound: snapshots.length,
       missingDays: this._findMissingDays(start, end, snapshots),
-      comptes: { debut, sortie },
+      comptes: { debut, sortie, sortieF2 },
       partenaires,
       totaux: {
-        debutTotal, sortieTotal, grTotal,
+        debutTotal, sortieTotal, sortieF2Total, grTotal,
         formatted: {
-          debutTotal:  this.formatAmount(debutTotal),
-          sortieTotal: this.formatAmount(sortieTotal),
-          grTotal:     this.formatAmount(grTotal, true)
+          debutTotal:    this.formatAmount(debutTotal),
+          sortieTotal:   this.formatAmount(sortieTotal),
+          sortieF2Total: this.formatAmount(sortieF2Total),
+          grTotal:       this.formatAmount(grTotal, true)
         }
       }
     };

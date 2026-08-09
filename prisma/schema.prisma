@@ -165,11 +165,27 @@ model DailySnapshot {
   seddoFin           BigInt   @default(0)
   versementBankDebut BigInt   @default(0)
   versementBankFin   BigInt   @default(0)
-  // ── NOUVEAU : Western 2 / Ria 2 ──
+  // ── Western 2 / Ria 2 ──
   westernUnion2Debut BigInt   @default(0)
   westernUnion2Fin   BigInt   @default(0)
   ria2Debut          BigInt   @default(0)
   ria2Fin            BigInt   @default(0)
+  // ── NOUVEAU : F2 (finSecondaire) par type, uniquement côté "fin" ──
+  // Miroir de Account.finSecondaire, mais un champ par type puisqu'un
+  // DailySnapshot couvre tous les types pour un superviseur/jour donné.
+  liquideFinSecondaire       BigInt @default(0)
+  orangeMoneyFinSecondaire   BigInt @default(0)
+  waveFinSecondaire          BigInt @default(0)
+  uvMasterFinSecondaire      BigInt @default(0)
+  autresFinSecondaire        BigInt @default(0)
+  freeMoneyFinSecondaire     BigInt @default(0)
+  westernUnionFinSecondaire  BigInt @default(0)
+  riaFinSecondaire           BigInt @default(0)
+  moneygramFinSecondaire     BigInt @default(0)
+  seddoFinSecondaire         BigInt @default(0)
+  versementBankFinSecondaire BigInt @default(0)
+  westernUnion2FinSecondaire BigInt @default(0)
+  ria2FinSecondaire          BigInt @default(0)
   customTypesData    Json?    @default("{}")
   user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
