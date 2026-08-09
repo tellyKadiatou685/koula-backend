@@ -42,28 +42,6 @@ class DateRangeService {
   }
 
   /**
-   * Mapping type de compte → champ F2 (finSecondaire) du DailySnapshot.
-   * F2 n'existe que côté "fin" (pas de F2 pour "début").
-   */
-  getTypeToSnapshotFieldF2() {
-    return {
-      LIQUIDE:        'liquideFinSecondaire',
-      ORANGE_MONEY:   'orangeMoneyFinSecondaire',
-      WAVE:           'waveFinSecondaire',
-      UV_MASTER:      'uvMasterFinSecondaire',
-      AUTRES:         'autresFinSecondaire',
-      FREE_MONEY:     'freeMoneyFinSecondaire',
-      WESTERN_UNION:  'westernUnionFinSecondaire',
-      RIA:            'riaFinSecondaire',
-      MONEYGRAM:      'moneygramFinSecondaire',
-      SEDDO:          'seddoFinSecondaire',
-      VERSEMENT_BANK: 'versementBankFinSecondaire',
-      WESTERN_2:      'westernUnion2FinSecondaire',
-      RIA_2:          'ria2FinSecondaire',
-    };
-  }
-
-  /**
    * Valide et normalise deux dates : accepte les deux ordres
    * (ex: "5 puis 3" ou "3 puis 5" donnent le même résultat).
    */
@@ -109,11 +87,10 @@ class DateRangeService {
       orderBy: { date: 'asc' }
     });
 
-    const fieldMap   = this.getTypeToSnapshotField();
-    const fieldMapF2 = this.getTypeToSnapshotFieldF2();
+    const fieldMap = this.getTypeToSnapshotField();
     const debut    = {};
     const sortie   = {};
-    const sortieF2 = {}; // ── NOUVEAU : cumul F2 par type
+    const sortieF2 = {};
     const add = (bucket, type, val) => {
       if (!val) return;
       bucket[type] = (bucket[type] || 0) + val;
@@ -129,21 +106,44 @@ class DateRangeService {
     // debutTotal/sortieTotal une seule fois à la fin, en sommant les objets
     // `debut`/`sortie` qu'on construit nous-mêmes ici (comptes + slots
     // extra + partenaires, chacun ajouté une seule fois via `add`).
+    //
     // F2 (sortieF2) reste un cumul à part : il n'entre PAS dans
     // debutTotal/sortieTotal/grTotal (comme pour le F2 "aujourd'hui" sur
     // Account.finSecondaire, c'est une donnée parallèle, pas une variation
     // de trésorerie officielle).
+    //
+    // ── CORRECTION : F2 n'est PAS lu depuis les colonnes DailySnapshot
+    // (snap.xxxFinSecondaire). Ces colonnes ne sont jamais remplies par le
+    // reset quotidien normal (createDailySnapshot() ne les écrit pas) —
+    // elles ne se remplissent que si un admin corrige F2 sur une date
+    // passée via le popover. La vraie source de F2 pour une date passée
+    // est la clé systemConfig `snapshot_f2_${userId}_${dateStr}`, exactement
+    // comme dans TransactionService.getSnapshotForDate(). On lit donc F2
+    // depuis là, jour par jour, pour rester cohérent avec la vue "jour
+    // unique" du dashboard.
     for (const snap of snapshots) {
       for (const [type, [debutField, finField]] of Object.entries(fieldMap)) {
         add(debut,  type, this.convertFromInt(snap[debutField]));
         add(sortie, type, this.convertFromInt(snap[finField]));
       }
-      for (const [type, finF2Field] of Object.entries(fieldMapF2)) {
-        add(sortieF2, type, this.convertFromInt(snap[finF2Field]));
+
+      const dateStr = snap.date.toISOString().split('T')[0];
+
+      // ── F2 : lecture depuis systemConfig (source de vérité du reset) ──
+      const f2Key = `snapshot_f2_${supervisorId}_${dateStr}`;
+      const f2Config = await prisma.systemConfig.findFirst({ where: { key: f2Key } });
+      const f2Data = f2Config?.value ? JSON.parse(f2Config.value) : {};
+
+      for (const type of Object.keys(fieldMap)) {
+        const f2Raw = f2Data[type];
+        if (f2Raw !== undefined && f2Raw !== null) {
+          try {
+            add(sortieF2, type, this.convertFromInt(BigInt(f2Raw)));
+          } catch (_) { /* ignore valeur invalide */ }
+        }
       }
 
       // Slots custom AUTRES_* sauvegardés en dehors des champs fixes
-      const dateStr  = snap.date.toISOString().split('T')[0];
       const extraKey = `snapshot_extra_${supervisorId}_${dateStr}`;
       const extraConfig = await prisma.systemConfig.findFirst({ where: { key: extraKey } });
       if (extraConfig?.value) {
@@ -153,8 +153,19 @@ class DateRangeService {
             if (fieldMap[type]) continue; // déjà traité ci-dessus
             add(debut,  type, this.convertFromInt(BigInt(values.debut || 0)));
             add(sortie, type, this.convertFromInt(BigInt(values.fin   || 0)));
-            if (values.finSecondaire !== undefined) {
-              add(sortieF2, type, this.convertFromInt(BigInt(values.finSecondaire || 0)));
+
+            // F2 pour les types custom : priorité systemConfig, sinon
+            // valeur embarquée dans snapshot_extra (même logique que
+            // TransactionService.getSnapshotForDate)
+            const f2FromConfig = f2Data[type];
+            if (f2FromConfig !== undefined && f2FromConfig !== null) {
+              try {
+                add(sortieF2, type, this.convertFromInt(BigInt(f2FromConfig)));
+              } catch (_) { /* ignore */ }
+            } else if (values.finSecondaire) {
+              try {
+                add(sortieF2, type, this.convertFromInt(BigInt(values.finSecondaire)));
+              } catch (_) { /* ignore */ }
             }
           }
         } catch (_) { /* ignore JSON invalide */ }
